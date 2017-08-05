@@ -34,6 +34,16 @@
 #include "err.hpp"
 #include "macros.hpp"
 
+#ifndef ZMQ_HAVE_WINDOWS
+#include <net/if.h>
+#endif
+
+#if defined IFNAMSIZ
+#define BINDDEVSIZ IFNAMSIZ
+#else
+#define BINDDEVSIZ 16
+#endif
+
 zmq::options_t::options_t () :
     sndhwm (1000),
     rcvhwm (1000),
@@ -43,8 +53,8 @@ zmq::options_t::options_t () :
     recovery_ivl (10000),
     multicast_hops (1),
     multicast_maxtpdu (1500),
-    sndbuf (8192),
-    rcvbuf (8192),
+    sndbuf (-1),
+    rcvbuf (-1),
     tos (0),
     type (-1),
     linger (-1),
@@ -69,6 +79,8 @@ zmq::options_t::options_t () :
     tcp_keepalive_intvl (-1),
     mechanism (ZMQ_NULL),
     as_server (0),
+    gss_principal_nt (ZMQ_GSSAPI_NT_HOSTBASED),
+    gss_service_principal_nt (ZMQ_GSSAPI_NT_HOSTBASED),
     gss_plaintext (false),
     socket_id (0),
     conflate (false),
@@ -88,6 +100,38 @@ zmq::options_t::options_t () :
     vmci_buffer_max_size = 0;
     vmci_connect_timeout = -1;
 #endif
+}
+
+int zmq::options_t::set_curve_key(uint8_t * destination, const void * optval_, size_t optvallen_)
+{
+    switch (optvallen_) {
+
+        case CURVE_KEYSIZE:
+            memcpy (destination, optval_, optvallen_);
+            mechanism = ZMQ_CURVE;
+            return 0;
+
+        case CURVE_KEYSIZE_Z85 + 1:
+            if (zmq_z85_decode (destination, (char *) optval_)) {
+                mechanism = ZMQ_CURVE;
+                return 0;
+            }
+            break;
+
+        case CURVE_KEYSIZE_Z85:
+            char z85_key [CURVE_KEYSIZE_Z85 + 1];
+            memcpy (z85_key, (char *) optval_, optvallen_);
+            z85_key [CURVE_KEYSIZE_Z85] = 0;
+            if (zmq_z85_decode (destination, z85_key)) {
+                mechanism = ZMQ_CURVE;
+                return 0;
+            }
+            break;
+
+        default:
+            break;
+    }
+    return -1;
 }
 
 int zmq::options_t::setsockopt (int option_, const void *optval_,
@@ -146,14 +190,14 @@ int zmq::options_t::setsockopt (int option_, const void *optval_,
             break;
 
         case ZMQ_SNDBUF:
-            if (is_int && value >= 0) {
+            if (is_int && value >= -1) {
                 sndbuf = value;
                 return 0;
             }
             break;
 
         case ZMQ_RCVBUF:
-            if (is_int && value >= 0) {
+            if (is_int && value >= -1) {
                 rcvbuf = value;
                 return 0;
             }
@@ -418,86 +462,21 @@ int zmq::options_t::setsockopt (int option_, const void *optval_,
             break;
 
         case ZMQ_CURVE_PUBLICKEY:
-            //  TODO: refactor repeated code for these three options
-            //  into set_curve_key (destination, optval, optlen) method
-            //  ==> set_curve_key (curve_public_key, optval_, optvallen_);
-            if (optvallen_ == CURVE_KEYSIZE) {
-                memcpy (curve_public_key, optval_, CURVE_KEYSIZE);
-                mechanism = ZMQ_CURVE;
+            if(0 == set_curve_key(curve_public_key, optval_, optvallen_)) {
                 return 0;
-            }
-            else
-            if (optvallen_ == CURVE_KEYSIZE_Z85 + 1) {
-                if (zmq_z85_decode (curve_public_key, (char *) optval_)) {
-                    mechanism = ZMQ_CURVE;
-                    return 0;
-                }
-            }
-            else
-            //  Deprecated, not symmetrical with zmq_getsockopt
-            if (optvallen_ == CURVE_KEYSIZE_Z85) {
-                char z85_key [CURVE_KEYSIZE_Z85 + 1];
-                memcpy (z85_key, (char *) optval_, CURVE_KEYSIZE_Z85);
-                z85_key [CURVE_KEYSIZE_Z85] = 0;
-                if (zmq_z85_decode (curve_public_key, z85_key)) {
-                    mechanism = ZMQ_CURVE;
-                    return 0;
-                }
             }
             break;
 
         case ZMQ_CURVE_SECRETKEY:
-            if (optvallen_ == CURVE_KEYSIZE) {
-                memcpy (curve_secret_key, optval_, CURVE_KEYSIZE);
-                mechanism = ZMQ_CURVE;
+            if(0 == set_curve_key(curve_secret_key, optval_, optvallen_)) {
                 return 0;
-            }
-            else
-            if (optvallen_ == CURVE_KEYSIZE_Z85 + 1) {
-                if (zmq_z85_decode (curve_secret_key, (char *) optval_)) {
-                    mechanism = ZMQ_CURVE;
-                    return 0;
-                }
-            }
-            else
-            //  Deprecated, not symmetrical with zmq_getsockopt
-            if (optvallen_ == CURVE_KEYSIZE_Z85) {
-                char z85_key [CURVE_KEYSIZE_Z85 + 1];
-                memcpy (z85_key, (char *) optval_, CURVE_KEYSIZE_Z85);
-                z85_key [CURVE_KEYSIZE_Z85] = 0;
-                if (zmq_z85_decode (curve_secret_key, z85_key)) {
-                    mechanism = ZMQ_CURVE;
-                    return 0;
-                }
             }
             break;
 
         case ZMQ_CURVE_SERVERKEY:
-            if (optvallen_ == CURVE_KEYSIZE) {
-                memcpy (curve_server_key, optval_, CURVE_KEYSIZE);
-                mechanism = ZMQ_CURVE;
+            if(0 == set_curve_key(curve_server_key, optval_, optvallen_)) {
                 as_server = 0;
                 return 0;
-            }
-            else
-            if (optvallen_ == CURVE_KEYSIZE_Z85 + 1) {
-                if (zmq_z85_decode (curve_server_key, (char *) optval_)) {
-                    mechanism = ZMQ_CURVE;
-                    as_server = 0;
-                    return 0;
-                }
-            }
-            else
-            //  Deprecated, not symmetrical with zmq_getsockopt
-            if (optvallen_ == CURVE_KEYSIZE_Z85) {
-                char z85_key [CURVE_KEYSIZE_Z85 + 1];
-                memcpy (z85_key, (char *) optval_, CURVE_KEYSIZE_Z85);
-                z85_key [CURVE_KEYSIZE_Z85] = 0;
-                if (zmq_z85_decode (curve_server_key, z85_key)) {
-                    mechanism = ZMQ_CURVE;
-                    as_server = 0;
-                    return 0;
-                }
             }
             break;
 #endif
@@ -539,6 +518,24 @@ int zmq::options_t::setsockopt (int option_, const void *optval_,
         case ZMQ_GSSAPI_PLAINTEXT:
             if (is_int && (value == 0 || value == 1)) {
                 gss_plaintext = (value != 0);
+                return 0;
+            }
+            break;
+
+        case ZMQ_GSSAPI_PRINCIPAL_NAMETYPE:
+            if (is_int && (value == ZMQ_GSSAPI_NT_HOSTBASED
+                        || value == ZMQ_GSSAPI_NT_USER_NAME
+                        || value == ZMQ_GSSAPI_NT_KRB5_PRINCIPAL)) {
+                gss_principal_nt = value;
+                return 0;
+            }
+            break;
+
+        case ZMQ_GSSAPI_SERVICE_PRINCIPAL_NAMETYPE:
+            if (is_int && (value == ZMQ_GSSAPI_NT_HOSTBASED
+                        || value == ZMQ_GSSAPI_NT_USER_NAME
+                        || value == ZMQ_GSSAPI_NT_KRB5_PRINCIPAL)) {
+                gss_service_principal_nt = value;
                 return 0;
             }
             break;
@@ -614,6 +611,19 @@ int zmq::options_t::setsockopt (int option_, const void *optval_,
         case ZMQ_USE_FD:
             if (is_int && value >= -1) {
                 use_fd = value;
+                return 0;
+            }
+            break;
+
+        case ZMQ_BINDTODEVICE:
+            if (optval_ == NULL && optvallen_ == 0) {
+                bound_device.clear ();
+                return 0;
+            }
+            else
+            if (optval_ != NULL && optvallen_ > 0 && optvallen_ <= BINDDEVSIZ) {
+                bound_device =
+                    std::string ((const char *) optval_, optvallen_);
                 return 0;
             }
             break;
@@ -976,6 +986,19 @@ int zmq::options_t::getsockopt (int option_, void *optval_, size_t *optvallen_) 
                 return 0;
             }
             break;
+
+        case ZMQ_GSSAPI_PRINCIPAL_NAMETYPE:
+            if (is_int) {
+                *value = gss_principal_nt;
+                return 0;
+            }
+            break;
+        case ZMQ_GSSAPI_SERVICE_PRINCIPAL_NAMETYPE:
+            if (is_int) {
+                *value = gss_service_principal_nt;
+                return 0;
+            }
+            break;
 #endif
 
         case ZMQ_HANDSHAKE_IVL:
@@ -1017,6 +1040,14 @@ int zmq::options_t::getsockopt (int option_, void *optval_, size_t *optvallen_) 
         case ZMQ_USE_FD:
             if (is_int) {
                 *value = use_fd;
+                return 0;
+            }
+            break;
+
+        case ZMQ_BINDTODEVICE:
+            if (*optvallen_ >= bound_device.size () + 1) {
+                memcpy (optval_, bound_device.c_str (), bound_device.size () + 1);
+                *optvallen_ = bound_device.size () + 1;
                 return 0;
             }
             break;

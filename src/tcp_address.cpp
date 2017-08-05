@@ -147,7 +147,7 @@ int zmq::tcp_address_t::resolve_nic_name (const char *nic_, bool ipv6_, bool is_
     }
 
     const int family = ifr.ifr_addr.sa_family;
-    if ((family == AF_INET || (ipv6_ && family == AF_INET6))
+    if (family == (ipv6_ ? AF_INET6 : AF_INET)
         && !strcmp (nic_, ifr.ifr_name))
     {
         if (is_src_)
@@ -182,7 +182,24 @@ int zmq::tcp_address_t::resolve_nic_name (const char *nic_, bool ipv6_, bool is_
 {
     //  Get the addresses.
     ifaddrs *ifa = NULL;
-    const int rc = getifaddrs (&ifa);
+    int rc = 0;
+    const int max_attempts = 10;
+    const int backoff_msec = 1;
+    for (int i = 0; i < max_attempts; i++) {
+        rc = getifaddrs (&ifa);
+        if (rc == 0 || (rc < 0 && errno != ECONNREFUSED))
+            break;
+        usleep ((backoff_msec << i) * 1000);
+    }
+
+    if (rc != 0 && ((errno == EINVAL) || (errno==EOPNOTSUPP))) {
+        // Windows Subsystem for Linux compatibility
+        LIBZMQ_UNUSED (nic_);
+        LIBZMQ_UNUSED (ipv6_);
+
+        errno = ENODEV;
+        return -1;
+    }
     errno_assert (rc == 0);
     zmq_assert (ifa != NULL);
 
@@ -193,7 +210,7 @@ int zmq::tcp_address_t::resolve_nic_name (const char *nic_, bool ipv6_, bool is_
             continue;
 
         const int family = ifp->ifa_addr->sa_family;
-        if ((family == AF_INET || (ipv6_ && family == AF_INET6))
+        if (family == (ipv6_ ? AF_INET6 : AF_INET)
         && !strcmp (nic_, ifp->ifa_name)) {
             if (is_src_)
                 memcpy (&source_address, ifp->ifa_addr,
@@ -218,10 +235,147 @@ int zmq::tcp_address_t::resolve_nic_name (const char *nic_, bool ipv6_, bool is_
     return 0;
 }
 
+#elif (defined ZMQ_HAVE_WINDOWS)
+
+#include <netioapi.h>
+
+int zmq::tcp_address_t::get_interface_name(unsigned long index, char ** dest) const {
+#ifdef ZMQ_HAVE_WINDOWS_UWP
+	char * buffer = (char*)malloc(1024);
+#else
+	char * buffer = (char*)malloc(IF_MAX_STRING_SIZE);
+#endif
+    alloc_assert(buffer);
+
+    char * if_name_result = NULL;
+
+#if !defined ZMQ_HAVE_WINDOWS_TARGET_XP && !defined ZMQ_HAVE_WINDOWS_UWP 
+    if_name_result = if_indextoname(index, buffer);
+#endif
+
+    if (if_name_result == NULL) {
+        free(buffer);
+        return -1;
+    }
+
+    *dest = buffer;
+    return 0;
+}
+
+int zmq::tcp_address_t::wchar_to_utf8(const WCHAR * src, char ** dest) const {
+    int rc;
+    int buffer_len = WideCharToMultiByte(CP_UTF8, 0,
+                                         src, -1,
+                                         NULL, 0,
+                                         NULL, 0);
+
+    char * buffer = (char*) malloc(buffer_len);
+    alloc_assert(buffer);
+
+    rc = WideCharToMultiByte(CP_UTF8, 0,
+                             src, -1,
+                             buffer, buffer_len,
+                             NULL, 0);
+
+    if (rc == 0) {
+        free(buffer);
+        return -1;
+    }
+
+    *dest = buffer;
+    return 0;
+}
+
+int zmq::tcp_address_t::resolve_nic_name(const char *nic_, bool ipv6_, bool is_src_)
+{
+    int rc;
+    bool found = false;
+    const int max_attempts = 10;
+
+    int iterations = 0;
+    IP_ADAPTER_ADDRESSES * addresses = NULL;
+    IP_ADAPTER_ADDRESSES * current_addresses = NULL;
+    unsigned long out_buf_len = sizeof(IP_ADAPTER_ADDRESSES);
+
+    do {
+        addresses = (IP_ADAPTER_ADDRESSES *) malloc(out_buf_len);
+        alloc_assert(addresses);
+
+        rc = GetAdaptersAddresses(AF_UNSPEC,
+                                  GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                                  NULL,
+                                  addresses, &out_buf_len);
+        if (rc == ERROR_BUFFER_OVERFLOW) {
+            free(addresses);
+            addresses = NULL;
+        }
+        else {
+            break;
+        }
+        iterations++;
+    } while ((rc == ERROR_BUFFER_OVERFLOW) && (iterations < max_attempts));
+
+    if (rc == 0) {
+        current_addresses = addresses;
+        while (current_addresses) {
+            char * if_name = NULL;
+            char * if_friendly_name = NULL;
+            int str_rc1, str_rc2;
+
+            str_rc1 = get_interface_name(current_addresses->IfIndex, &if_name);
+            str_rc2 = wchar_to_utf8(current_addresses->FriendlyName, &if_friendly_name);
+
+            //  Find a network adapter by its "name" or "friendly name"
+            if (
+                ((str_rc1 == 0) && (!strcmp(nic_, if_name)))
+                || ((str_rc2 == 0) && (!strcmp(nic_, if_friendly_name)))
+                ) {
+
+                //  Iterate over all unicast addresses bound to the current network interface
+                IP_ADAPTER_UNICAST_ADDRESS * unicast_address = current_addresses->FirstUnicastAddress;
+                IP_ADAPTER_UNICAST_ADDRESS * current_unicast_address = unicast_address;
+
+                while (current_unicast_address) {
+                    ADDRESS_FAMILY family = current_unicast_address->Address.lpSockaddr->sa_family;
+
+                    if (family == (ipv6_ ? AF_INET6 : AF_INET)) {
+                        if (is_src_)
+                            memcpy(&source_address, current_unicast_address->Address.lpSockaddr,
+                                   (family == AF_INET) ? sizeof(struct sockaddr_in)
+                                   : sizeof(struct sockaddr_in6));
+                        else
+                            memcpy(&address, current_unicast_address->Address.lpSockaddr,
+                                   (family == AF_INET) ? sizeof(struct sockaddr_in)
+                                   : sizeof(struct sockaddr_in6));
+                        found = true;
+                        break;
+                    }
+
+                    current_unicast_address = current_unicast_address->Next;
+                }
+
+                if (found) break;
+            }
+
+            if (str_rc1 == 0) free(if_name);
+            if (str_rc2 == 0) free(if_friendly_name);
+
+            current_addresses = current_addresses->Next;
+        }
+
+        free(addresses);
+    }
+
+    if (!found) {
+        errno = ENODEV;
+        return -1;
+    }
+    return 0;
+}
+
 #else
 
 //  On other platforms we assume there are no sane interface names.
-//  This is true especially of Windows.
 int zmq::tcp_address_t::resolve_nic_name (const char *nic_, bool ipv6_, bool is_src_)
 {
     LIBZMQ_UNUSED (nic_);
@@ -294,19 +448,37 @@ int zmq::tcp_address_t::resolve_interface (const char *interface_, bool ipv6_, b
     //  service-name irregularity due to indeterminate socktype.
     req.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
 
-#if defined AI_V4MAPPED && !defined ZMQ_HAVE_FREEBSD && !defined ZMQ_HAVE_DRAGONFLY
+#if defined AI_V4MAPPED
     //  In this API we only require IPv4-mapped addresses when
     //  no native IPv6 interfaces are available (~AI_ALL).
     //  This saves an additional DNS roundtrip for IPv4 addresses.
-    //  Note: While the AI_V4MAPPED flag is defined on FreeBSD system,
-    //  it is not supported here. See libzmq issue #331.
     if (req.ai_family == AF_INET6)
         req.ai_flags |= AI_V4MAPPED;
 #endif
 
     //  Resolve the literal address. Some of the error info is lost in case
     //  of error, however, there's no way to report EAI errors via errno.
-    rc = getaddrinfo (interface_, NULL, &req, &res);
+
+    rc = getaddrinfo(interface_, NULL, &req, &res);
+
+#if defined AI_V4MAPPED
+    // Some OS do have AI_V4MAPPED defined but it is not supported in getaddrinfo()
+    // returning EAI_BADFLAGS. Detect this and retry
+    if (rc == EAI_BADFLAGS && (req.ai_flags & AI_V4MAPPED)) {
+        req.ai_flags &= ~AI_V4MAPPED;
+        rc = getaddrinfo(interface_, NULL, &req, &res);
+    }
+#endif
+
+#if defined ZMQ_HAVE_WINDOWS
+    //  Resolve specific case on Windows platform when using IPv4 address
+    //  with ZMQ_IPv6 socket option.
+    if ((req.ai_family == AF_INET6) && (rc == WSAHOST_NOT_FOUND)) {
+        req.ai_family = AF_INET;
+        rc = getaddrinfo(interface_, NULL, &req, &res);
+    }
+#endif
+
     if (rc) {
         errno = ENODEV;
         return -1;
@@ -344,12 +516,10 @@ int zmq::tcp_address_t::resolve_hostname (const char *hostname_, bool ipv6_, boo
     //  doesn't really matter, since it's not included in the addr-output.
     req.ai_socktype = SOCK_STREAM;
 
-#if defined AI_V4MAPPED && !defined ZMQ_HAVE_FREEBSD && !defined ZMQ_HAVE_DRAGONFLY
+#if defined AI_V4MAPPED
     //  In this API we only require IPv4-mapped addresses when
     //  no native IPv6 interfaces are available.
     //  This saves an additional DNS roundtrip for IPv4 addresses.
-    //  Note: While the AI_V4MAPPED flag is defined on FreeBSD system,
-    //  it is not supported here. See libzmq issue #331.
     if (req.ai_family == AF_INET6)
         req.ai_flags |= AI_V4MAPPED;
 #endif
@@ -361,7 +531,17 @@ int zmq::tcp_address_t::resolve_hostname (const char *hostname_, bool ipv6_, boo
 #else
     addrinfo *res;
 #endif
-    const int rc = getaddrinfo (hostname_, NULL, &req, &res);
+    int rc = getaddrinfo (hostname_, NULL, &req, &res);
+
+#if defined AI_V4MAPPED
+    // Some OS do have AI_V4MAPPED defined but it is not supported in getaddrinfo()
+    // returning EAI_BADFLAGS. Detect this and retry
+    if (rc == EAI_BADFLAGS && (req.ai_flags & AI_V4MAPPED)) {
+        req.ai_flags &= ~AI_V4MAPPED;
+        rc = getaddrinfo(hostname_, NULL, &req, &res);
+    }
+#endif
+
     if (rc) {
         switch (rc) {
         case EAI_MEMORY:
@@ -444,13 +624,13 @@ int zmq::tcp_address_t::resolve (const char *name_, bool local_, bool ipv6_, boo
 
     // Test the '%' to know if we have an interface name / zone_id in the address
     // Reference: https://tools.ietf.org/html/rfc4007
-    std::size_t pos = addr_str.rfind("%");
+    std::size_t pos = addr_str.rfind('%');
     uint32_t zone_id = 0;
     if (pos != std::string::npos) {
         std::string if_str = addr_str.substr(pos + 1);
         addr_str = addr_str.substr(0, pos);
         if (isalpha (if_str.at (0)))
-#if !defined ZMQ_HAVE_WINDOWS_TARGET_XP
+#if !defined ZMQ_HAVE_WINDOWS_TARGET_XP && !defined ZMQ_HAVE_WINDOWS_UWP 
             zone_id = if_nametoindex(if_str.c_str());
 #else
             // The function 'if_nametoindex' is not supported on Windows XP.

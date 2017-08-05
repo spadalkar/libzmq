@@ -44,10 +44,11 @@ namespace zmq
     //  This structure defines the commands that can be sent between threads.
 
 #ifdef _MSC_VER
-    __declspec(align(64)) struct command_t
-#else
-    struct command_t
+#pragma warning(push)
+#pragma warning(disable: 4324) // C4324: alignment padding warnings
+    __declspec(align(64))
 #endif
+    struct command_t
     {
         //  Object to process the command.
         zmq::object_t *destination;
@@ -64,6 +65,7 @@ namespace zmq
             hiccup,
             pipe_term,
             pipe_term_ack,
+            pipe_hwm,
             term_req,
             term,
             term_ack,
@@ -129,6 +131,12 @@ namespace zmq
             struct {
             } pipe_term_ack;
 
+            //  Sent by one of pipe to another part for modify hwm
+            struct {
+                int inhwm;
+                int outhwm;
+            } pipe_hwm;
+
             //  Sent by I/O object ot the socket to request the shutdown of
             //  the I/O object.
             struct {
@@ -163,6 +171,7 @@ namespace zmq
         } args;
 #ifdef _MSC_VER
     };
+#pragma warning(pop)
 #else
     } __attribute__((aligned(64)));
 #endif

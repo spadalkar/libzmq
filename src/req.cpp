@@ -28,6 +28,7 @@
 */
 
 #include "precompiled.hpp"
+#include "macros.hpp"
 #include "req.hpp"
 #include "err.hpp"
 #include "msg.hpp"
@@ -39,6 +40,7 @@ extern "C"
 {
     static void free_id (void *data, void *hint)
     {
+        LIBZMQ_UNUSED (hint);
         free (data);
     }
 }
@@ -82,6 +84,8 @@ int zmq::req_t::xsend (msg_t *msg_)
 
             //  Copy request id before sending (see issue #1695 for details).
             uint32_t *request_id_copy = (uint32_t *) malloc (sizeof (uint32_t));
+            zmq_assert (request_id_copy);
+
             *request_id_copy = request_id;
 
             msg_t id;

@@ -30,8 +30,6 @@
 #ifndef __ZMQ_GSSAPI_MECHANISM_BASE_HPP_INCLUDED__
 #define __ZMQ_GSSAPI_MECHANISM_BASE_HPP_INCLUDED__
 
-#include "platform.hpp"
-
 #ifdef HAVE_LIBGSSAPI_KRB5
 
 #if HAVE_GSSAPI_GSSAPI_GENERIC_H
@@ -81,10 +79,14 @@ namespace zmq
         //  the  established security context.
         int decode_message (msg_t *msg_);
 
+	//  Convert ZMQ_GSSAPI_NT values to GSSAPI name_type
+	static const gss_OID convert_nametype (int zmq_name_type_);
+
         //  Acquire security context credentials from the
         //  underlying mechanism.
         static int acquire_credentials (char * principal_name_,
-                                        gss_cred_id_t * cred_);
+                                        gss_cred_id_t * cred_,
+					gss_OID name_type_);
 
     protected:
         //  Opaque GSSAPI token for outgoing data

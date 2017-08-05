@@ -30,11 +30,7 @@
 #ifndef __ZMQ_TCP_ADDRESS_HPP_INCLUDED__
 #define __ZMQ_TCP_ADDRESS_HPP_INCLUDED__
 
-#include "platform.hpp"
-
-#if defined ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#else
+#if !defined ZMQ_HAVE_WINDOWS
 #include <sys/socket.h>
 #include <netinet/in.h>
 #endif
@@ -75,6 +71,11 @@ namespace zmq
         int resolve_nic_name (const char *nic_, bool ipv6_, bool is_src_ = false);
         int resolve_interface (const char *interface_, bool ipv6_, bool is_src_ = false);
         int resolve_hostname (const char *hostname_, bool ipv6_, bool is_src_ = false);
+
+#if defined ZMQ_HAVE_WINDOWS
+		int get_interface_name(unsigned long index, char ** dest) const;
+		int wchar_to_utf8(const WCHAR * src, char ** dest) const;
+#endif
 
         union {
             sockaddr generic;

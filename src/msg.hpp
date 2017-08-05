@@ -34,6 +34,7 @@
 #include <stdio.h>
 
 #include "config.hpp"
+#include "err.hpp"
 #include "fd.hpp"
 #include "atomic_counter.hpp"
 #include "metadata.hpp"
@@ -58,7 +59,7 @@ namespace zmq
 
         //  Shared message buffer. Message data are either allocated in one
         //  continuous block along with this structure - thus avoiding one
-        //  malloc/free pair or they are stored in used-supplied memory.
+        //  malloc/free pair or they are stored in user-supplied memory.
         //  In the latter case, ffn member stores pointer to the function to be
         //  used to deallocate the data. If the buffer is actually shared (there
         //  are at least 2 references to it) refcount member contains number of
@@ -82,7 +83,7 @@ namespace zmq
             shared = 128
         };
 
-        bool check ();
+        bool check () const;
         int init();
 
         int init (void* data, size_t size_,
@@ -101,12 +102,10 @@ namespace zmq
         int move (msg_t &src_);
         int copy (msg_t &src_);
         void *data ();
-        size_t size ();
-        unsigned char flags ();
+        size_t size () const;
+        unsigned char flags () const;
         void set_flags (unsigned char flags_);
         void reset_flags (unsigned char flags_);
-        fd_t fd ();
-        void set_fd (fd_t fd_);
         metadata_t *metadata () const;
         void set_metadata (metadata_t *metadata_);
         void reset_metadata ();
@@ -139,8 +138,7 @@ namespace zmq
         enum { max_vsm_size = msg_t_size - (sizeof (metadata_t *) +
                                             3 +
                                             16 +
-                                            sizeof (uint32_t) +
-                                            sizeof (fd_t))};
+                                            sizeof (uint32_t))};
     private:
         zmq::atomic_counter_t* refcnt();
 
@@ -179,13 +177,11 @@ namespace zmq
                 unsigned char unused [msg_t_size - (sizeof (metadata_t *) +
                                                     2 +
                                                     16 +
-                                                    sizeof (uint32_t) +
-                                                    sizeof (fd_t))];
+                                                    sizeof (uint32_t))];
                 unsigned char type;
                 unsigned char flags;
                 char group [16];
                 uint32_t routing_id;
-                fd_t fd;
             } base;
             struct {
                 metadata_t *metadata;
@@ -195,7 +191,6 @@ namespace zmq
                 unsigned char flags;
                 char group [16];
                 uint32_t routing_id;
-                fd_t fd;
             } vsm;
             struct {
                 metadata_t *metadata;
@@ -204,13 +199,11 @@ namespace zmq
                                                     sizeof (content_t*) +
                                                     2 +
                                                     16 +
-                                                    sizeof (uint32_t) +
-                                                    sizeof (fd_t))];
+                                                    sizeof (uint32_t))];
                 unsigned char type;
                 unsigned char flags;
                 char group [16];
                 uint32_t routing_id;
-                fd_t fd;
             } lmsg;
             struct {
                 metadata_t *metadata;
@@ -219,13 +212,11 @@ namespace zmq
                                                     sizeof (content_t*) +
                                                     2 +
                                                     16 +
-                                                    sizeof (uint32_t) +
-                                                    sizeof (fd_t))];
+                                                    sizeof (uint32_t))];
                 unsigned char type;
                 unsigned char flags;
                 char group [16];
                 uint32_t routing_id;
-                fd_t fd;
             } zclmsg;
             struct {
                 metadata_t *metadata;
@@ -236,30 +227,42 @@ namespace zmq
                                                     sizeof (size_t) +
                                                     2 +
                                                     16 +
-                                                    sizeof (uint32_t) +
-                                                    sizeof (fd_t))];
+                                                    sizeof (uint32_t))];
                 unsigned char type;
                 unsigned char flags;
                 char group [16];
                 uint32_t routing_id;
-                fd_t fd;
             } cmsg;
             struct {
                 metadata_t *metadata;
                 unsigned char unused [msg_t_size - (sizeof (metadata_t *) +
                                                     2 +
                                                     16 +
-                                                    sizeof (uint32_t) +
-                                                    sizeof (fd_t))];
+                                                    sizeof (uint32_t))];
                 unsigned char type;
                 unsigned char flags;
                 char group [16];
                 uint32_t routing_id;
-                fd_t fd;
             } delimiter;
         } u;
     };
 
+    inline int close_and_return (zmq::msg_t *msg, int echo)
+    {
+        // Since we abort on close failure we preserve errno for success case.
+        int err = errno;
+        const int rc = msg->close ();
+        errno_assert (rc == 0);
+        errno = err;
+        return echo;
+    }
+
+    inline int close_and_return (zmq::msg_t msg [], int count, int echo)
+    {
+        for (int i = 0; i < count; i++)
+            close_and_return (&msg [i], 0);
+        return echo;
+    }
 }
 
 #endif

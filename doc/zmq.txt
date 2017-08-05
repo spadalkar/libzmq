@@ -30,6 +30,9 @@ provided by the 0MQ library.
 
 Context
 ~~~~~~~
+The 0MQ 'context' keeps the list of sockets and manages the async I/O thread
+and internal queries.
+
 Before using any 0MQ library functions you must create a 0MQ 'context'. When
 you exit your application you must destroy the 'context'. These functions let
 you work with 'contexts':
@@ -105,7 +108,7 @@ Message manipulation::
 
 Sockets
 ~~~~~~~
-0MQ sockets present an abstraction of a asynchronous _message queue_, with the
+0MQ sockets present an abstraction of an asynchronous _message queue_, with the
 exact queueing semantics depending on the socket type in use. See
 linkzmq:zmq_socket[3] for the socket types provided.
 
@@ -165,6 +168,9 @@ Local in-process (inter-thread) communication transport::
 Virtual Machine Communications Interface (VMC) transport::
     linkzmq:zmq_vmci[7]
 
+Unreliable unicast and multicast using UDP::
+    linkzmq:zmq_udp[7]
+
 
 Proxies
 ~~~~~~~
@@ -192,6 +198,9 @@ Elliptic curve authentication and encryption::
 
 Generate a CURVE keypair in armored text format::
     linkzmq:zmq_curve_keypair[3]
+
+Derive a CURVE public key from a secret key:
+    linkzmq:zmq_curve_public[3]
 
 Converting keys to/from armoured text strings::
     linkzmq:zmq_z85_decode[3]

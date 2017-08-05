@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2007-2016 Contributors as noted in the AUTHORS file
+    Copyright (c) 2007-2017 Contributors as noted in the AUTHORS file
 
     This file is part of 0MQ.
 
@@ -23,8 +23,10 @@
 #   include <ws2tcpip.h>
 #   include <stdexcept>
 #   define close closesocket
+typedef SOCKET raw_socket;
 #else
 #   include <arpa/inet.h>
+typedef int raw_socket;
 #endif
 
 //  Read one event off the monitor socket; return value and address
@@ -34,10 +36,11 @@
 static int
 get_monitor_event (void *monitor)
 {
-    for(int i = 0; i < 2; i++) {
+    for (int i = 0; i < 2; i++) {
         //  First frame in message contains event number and value
         zmq_msg_t msg;
-        zmq_msg_init (&msg);
+        int rc = zmq_msg_init (&msg);
+        assert (rc == 0);
         if (zmq_msg_recv (&msg, monitor, ZMQ_DONTWAIT) == -1) {
             msleep (SETTLE_TIME);
             continue;           //  Interruped, presumably
@@ -48,7 +51,8 @@ get_monitor_event (void *monitor)
         uint16_t event = *(uint16_t *) (data);
 
         //  Second frame in message contains event address
-        zmq_msg_init (&msg);
+        rc = zmq_msg_init (&msg);
+        assert (rc == 0);
         if (zmq_msg_recv (&msg, monitor, 0) == -1) {
             return -1;              //  Interruped, presumably
         }
@@ -60,7 +64,7 @@ get_monitor_event (void *monitor)
 }
 
 static void
-recv_with_retry (int fd, char *buffer, int bytes) {
+recv_with_retry (raw_socket fd, char *buffer, int bytes) {
   int received = 0;
     while (true) {
       int rc = recv(fd, buffer + received, bytes - received, 0);
@@ -72,18 +76,18 @@ recv_with_retry (int fd, char *buffer, int bytes) {
 }
 
 static void
-mock_handshake (int fd) {
+mock_handshake (raw_socket fd) {
     const uint8_t zmtp_greeting[33] = { 0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0x7f, 3, 0, 'N', 'U', 'L', 'L', 0 };
-    char buffer[128];
-    memset(buffer, 0, sizeof(buffer));
-    memcpy(buffer, zmtp_greeting, sizeof(zmtp_greeting));
+    char buffer [128];
+    memset (buffer, 0, sizeof(buffer));
+    memcpy (buffer, zmtp_greeting, sizeof(zmtp_greeting));
 
-    int rc = send(fd, buffer, 64, 0);
-    assert(rc == 64);
+    int rc = send (fd, buffer, 64, 0);
+    assert (rc == 64);
 
-    recv_with_retry(fd, buffer, 64);
+    recv_with_retry (fd, buffer, 64);
 
-    const uint8_t zmtp_ready[43] = {
+    const uint8_t zmtp_ready [43] = {
         4, 41, 5, 'R', 'E', 'A', 'D', 'Y', 11, 'S', 'o', 'c', 'k', 'e', 't', '-', 'T', 'y', 'p', 'e',
         0, 0, 0, 6, 'D', 'E', 'A', 'L', 'E', 'R', 8, 'I', 'd', 'e', 'n', 't', 'i', 't', 'y',
         0, 0, 0, 0
@@ -92,18 +96,18 @@ mock_handshake (int fd) {
     memset(buffer, 0, sizeof(buffer));
     memcpy(buffer, zmtp_ready, 43);
     rc = send(fd, buffer, 43, 0);
-    assert(rc == 43);
+    assert (rc == 43);
 
     recv_with_retry(fd, buffer, 43);
 }
 
 static void
-setup_curve(void * socket, int is_server) {
+setup_curve (void * socket, int is_server) {
     const char *secret_key;
     const char *public_key;
     const char *server_key;
 
-    if(is_server) {
+    if (is_server) {
         secret_key = "JTKVSB%%)wK0E.X)V>+}o?pNmC{O&4W4b!Ni{Lh6";
         public_key = "rq:rM>}U?@Lns47E1%kR.o@n%FcmmsL/@{H8]yf7";
         server_key = NULL;
@@ -114,16 +118,17 @@ setup_curve(void * socket, int is_server) {
         server_key = "rq:rM>}U?@Lns47E1%kR.o@n%FcmmsL/@{H8]yf7";
     }
 
-    zmq_setsockopt(socket, ZMQ_CURVE_SECRETKEY, secret_key, strlen(secret_key));
-    zmq_setsockopt(socket, ZMQ_CURVE_PUBLICKEY, public_key, strlen(public_key));
-    if(is_server)
-        zmq_setsockopt(socket, ZMQ_CURVE_SERVER, &is_server, sizeof(is_server));
+    zmq_setsockopt (socket, ZMQ_CURVE_SECRETKEY, secret_key, strlen(secret_key));
+    zmq_setsockopt (socket, ZMQ_CURVE_PUBLICKEY, public_key, strlen(public_key));
+    if (is_server)
+        zmq_setsockopt (socket, ZMQ_CURVE_SERVER, &is_server, sizeof(is_server));
     else
-        zmq_setsockopt(socket, ZMQ_CURVE_SERVERKEY, server_key, strlen(server_key));
+        zmq_setsockopt (socket, ZMQ_CURVE_SERVERKEY, server_key, strlen(server_key));
 }
 
 static void
-prep_server_socket(void * ctx, int set_heartbeats, int is_curve, void ** server_out, void ** mon_out)
+prep_server_socket(void * ctx, int set_heartbeats, int is_curve, void ** server_out, void ** mon_out,
+        char *endpoint, size_t ep_length)
 {
     int rc;
     //  We'll be using this socket in raw mode
@@ -134,16 +139,18 @@ prep_server_socket(void * ctx, int set_heartbeats, int is_curve, void ** server_
     rc = zmq_setsockopt (server, ZMQ_LINGER, &value, sizeof (value));
     assert (rc == 0);
 
-    if(set_heartbeats) {
+    if (set_heartbeats) {
         value = 50;
         rc = zmq_setsockopt (server, ZMQ_HEARTBEAT_IVL, &value, sizeof(value));
         assert (rc == 0);
     }
 
-    if(is_curve)
+    if (is_curve)
         setup_curve(server, 1);
 
-    rc = zmq_bind (server, "tcp://127.0.0.1:5556");
+    rc = zmq_bind (server, "tcp://127.0.0.1:*");
+    assert (rc == 0);
+    rc = zmq_getsockopt (server, ZMQ_LAST_ENDPOINT, endpoint, &ep_length);
     assert (rc == 0);
 
     //  Create and connect a socket for collecting monitor events on dealer
@@ -169,19 +176,21 @@ static void
 test_heartbeat_timeout (void)
 {
     int rc;
+    char my_endpoint[MAX_SOCKET_STRING];
 
     //  Set up our context and sockets
     void *ctx = zmq_ctx_new ();
     assert (ctx);
 
     void * server, * server_mon;
-    prep_server_socket(ctx, 1, 0, &server, &server_mon);
+    prep_server_socket (ctx, 1, 0, &server, &server_mon, my_endpoint,
+            MAX_SOCKET_STRING);
 
     struct sockaddr_in ip4addr;
-    int s;
+    raw_socket s;
 
     ip4addr.sin_family = AF_INET;
-    ip4addr.sin_port = htons (5556);
+    ip4addr.sin_port = htons (atoi (strrchr (my_endpoint, ':') + 1));
 #if defined (ZMQ_HAVE_WINDOWS) && (_WIN32_WINNT < 0x0600)
     ip4addr.sin_addr.s_addr = inet_addr ("127.0.0.1");
 #else
@@ -193,15 +202,15 @@ test_heartbeat_timeout (void)
     assert (rc > -1);
 
     // Mock a ZMTP 3 client so we can forcibly time out a connection
-    mock_handshake(s);
+    mock_handshake (s);
 
     // By now everything should report as connected
     rc = get_monitor_event(server_mon);
-    assert(rc == ZMQ_EVENT_ACCEPTED);
+    assert (rc == ZMQ_EVENT_ACCEPTED);
 
     // We should have been disconnected
     rc = get_monitor_event(server_mon);
-    assert(rc == ZMQ_EVENT_DISCONNECTED);
+    assert (rc == ZMQ_EVENT_DISCONNECTED);
 
     close(s);
 
@@ -224,38 +233,42 @@ static void
 test_heartbeat_ttl (void)
 {
     int rc, value;
+    char my_endpoint[MAX_SOCKET_STRING];
 
     //  Set up our context and sockets
     void *ctx = zmq_ctx_new ();
     assert (ctx);
 
     void * server, * server_mon, *client;
-    prep_server_socket(ctx, 0, 0, &server, &server_mon);
+    prep_server_socket (ctx, 0, 0, &server, &server_mon, my_endpoint,
+            MAX_SOCKET_STRING);
 
-    client = zmq_socket(ctx, ZMQ_DEALER);
-    assert(client != NULL);
+    client = zmq_socket (ctx, ZMQ_DEALER);
+    assert (client != NULL);
 
     // Set the heartbeat TTL to 0.1 seconds
     value = 100;
-    zmq_setsockopt(client, ZMQ_HEARTBEAT_TTL, &value, sizeof(value));
+    rc = zmq_setsockopt (client, ZMQ_HEARTBEAT_TTL, &value, sizeof (value));
+    assert (rc == 0);
 
     // Set the heartbeat interval to much longer than the TTL so that
     // the socket times out oon the remote side.
     value = 250;
-    zmq_setsockopt(client, ZMQ_HEARTBEAT_IVL, &value, sizeof(value));
+    rc = zmq_setsockopt (client, ZMQ_HEARTBEAT_IVL, &value, sizeof (value));
+    assert (rc == 0);
 
-    rc = zmq_connect(client, "tcp://localhost:5556");
-    assert(rc == 0);
+    rc = zmq_connect (client, my_endpoint);
+    assert (rc == 0);
 
     // By now everything should report as connected
-    rc = get_monitor_event(server_mon);
-    assert(rc == ZMQ_EVENT_ACCEPTED);
+    rc = get_monitor_event (server_mon);
+    assert (rc == ZMQ_EVENT_ACCEPTED);
 
     msleep (SETTLE_TIME);
 
     // We should have been disconnected
-    rc = get_monitor_event(server_mon);
-    assert(rc == ZMQ_EVENT_DISCONNECTED);
+    rc = get_monitor_event (server_mon);
+    assert (rc == ZMQ_EVENT_DISCONNECTED);
 
     rc = zmq_close (server);
     assert (rc == 0);
@@ -277,29 +290,31 @@ static void
 test_heartbeat_notimeout (int is_curve)
 {
     int rc;
+    char my_endpoint[MAX_SOCKET_STRING];
 
     //  Set up our context and sockets
     void *ctx = zmq_ctx_new ();
     assert (ctx);
 
     void * server, * server_mon;
-    prep_server_socket(ctx, 1, is_curve, &server, &server_mon);
+    prep_server_socket(ctx, 1, is_curve, &server, &server_mon, my_endpoint,
+            MAX_SOCKET_STRING);
 
-    void * client = zmq_socket(ctx, ZMQ_DEALER);
-    if(is_curve)
+    void * client = zmq_socket (ctx, ZMQ_DEALER);
+    if (is_curve)
         setup_curve(client, 0);
-    rc = zmq_connect(client, "tcp://127.0.0.1:5556");
+    rc = zmq_connect (client, my_endpoint);
 
     // Give it a sec to connect and handshake
     msleep (SETTLE_TIME);
 
     // By now everything should report as connected
     rc = get_monitor_event(server_mon);
-    assert(rc == ZMQ_EVENT_ACCEPTED);
+    assert (rc == ZMQ_EVENT_ACCEPTED);
 
     // We should still be connected because pings and pongs are happenin'
-    rc = get_monitor_event(server_mon);
-    assert(rc == -1);
+    rc = get_monitor_event (server_mon);
+    assert (rc == -1);
 
     rc = zmq_close (client);
     assert (rc == 0);
@@ -316,11 +331,11 @@ test_heartbeat_notimeout (int is_curve)
 
 int main (void)
 {
-    setup_test_environment();
-    test_heartbeat_timeout();
-    test_heartbeat_ttl();
+    setup_test_environment ();
+    test_heartbeat_timeout ();
+    test_heartbeat_ttl ();
     // Run this test without curve
-    test_heartbeat_notimeout(0);
+    test_heartbeat_notimeout (0);
     // Then rerun it with curve
-    test_heartbeat_notimeout(1);
+    test_heartbeat_notimeout (1);
 }

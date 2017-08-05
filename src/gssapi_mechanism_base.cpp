@@ -28,13 +28,8 @@
 */
 
 #include "precompiled.hpp"
-#include "platform.hpp"
 
 #ifdef HAVE_LIBGSSAPI_KRB5
-
-#ifdef ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#endif
 
 #include <string.h>
 #include <string>
@@ -85,6 +80,8 @@ int zmq::gssapi_mechanism_base_t::encode_message (msg_t *msg_)
         flags |= 0x02;
 
     uint8_t *plaintext_buffer = static_cast <uint8_t *>(malloc(msg_->size ()+1));
+    alloc_assert(plaintext_buffer);
+
     plaintext_buffer[0] = flags;
     memcpy (plaintext_buffer+1, msg_->data(), msg_->size());
 
@@ -154,8 +151,9 @@ int zmq::gssapi_mechanism_base_t::decode_message (msg_t *msg_)
     // TODO: instead of malloc/memcpy, can we just do: wrapped.value = ptr;
     const size_t alloc_length = wrapped.length? wrapped.length: 1;
     wrapped.value = static_cast <char *> (malloc (alloc_length));
+    alloc_assert (wrapped.value);
+
     if (wrapped.length) {
-        alloc_assert (wrapped.value);
         memcpy(wrapped.value, ptr, wrapped.length);
         ptr += wrapped.length;
         bytes_left -= wrapped.length;
@@ -186,7 +184,7 @@ int zmq::gssapi_mechanism_base_t::decode_message (msg_t *msg_)
     memcpy (msg_->data (), static_cast <char *> (plaintext.value)+1, plaintext.length-1);
 
     gss_release_buffer (&min_stat, &plaintext);
-    gss_release_buffer (&min_stat, &wrapped);
+    free(wrapped.value);
 
     if (bytes_left > 0) {
         errno = EPROTO;
@@ -252,9 +250,11 @@ int zmq::gssapi_mechanism_base_t::process_initiate (msg_t *msg_, void **token_va
         errno = EPROTO;
         return -1;
     }
+
     *token_value_ = static_cast <char *> (malloc (token_length_ ? token_length_ : 1));
+    alloc_assert (*token_value_);
+
     if (token_length_) {
-        alloc_assert (*token_value_);
         memcpy(*token_value_, ptr, token_length_);
         ptr += token_length_;
         bytes_left -= token_length_;
@@ -281,13 +281,15 @@ int zmq::gssapi_mechanism_base_t::produce_ready (msg_t *msg_)
 
     //  Add socket type property
     const char *socket_type = socket_type_string (options.type);
-    ptr += add_property (ptr, "Socket-Type", socket_type, strlen (socket_type));
+    ptr += add_property (ptr, ZMQ_MSG_PROPERTY_SOCKET_TYPE, socket_type,
+                         strlen (socket_type));
 
     //  Add identity property
     if (options.type == ZMQ_REQ
     ||  options.type == ZMQ_DEALER
     ||  options.type == ZMQ_ROUTER)
-        ptr += add_property (ptr, "Identity", options.identity, options.identity_size);
+        ptr += add_property (ptr, ZMQ_MSG_PROPERTY_IDENTITY, options.identity,
+                             options.identity_size);
 
     const size_t command_size = ptr - command_buffer;
     const int rc = msg_->init_size (command_size);
@@ -320,8 +322,24 @@ int zmq::gssapi_mechanism_base_t::process_ready (msg_t *msg_)
     bytes_left -= 6;
     return parse_metadata (ptr, bytes_left);
 }
+const gss_OID zmq::gssapi_mechanism_base_t::convert_nametype (int zmq_nametype)
+{
+    switch (zmq_nametype) {
+        case ZMQ_GSSAPI_NT_HOSTBASED:
+            return GSS_C_NT_HOSTBASED_SERVICE;
+        case ZMQ_GSSAPI_NT_USER_NAME:
+            return GSS_C_NT_USER_NAME;
+        case ZMQ_GSSAPI_NT_KRB5_PRINCIPAL:
+#ifdef GSS_KRB5_NT_PRINCIPAL_NAME
+            return (gss_OID)GSS_KRB5_NT_PRINCIPAL_NAME;
+#else
+            return GSS_C_NT_USER_NAME;
+#endif
+    }
+    return NULL;
+}
 
-int zmq::gssapi_mechanism_base_t::acquire_credentials (char * service_name_, gss_cred_id_t * cred_)
+int zmq::gssapi_mechanism_base_t::acquire_credentials (char * service_name_, gss_cred_id_t * cred_, gss_OID name_type_)
 {
     OM_uint32 maj_stat;
     OM_uint32 min_stat;
@@ -332,13 +350,13 @@ int zmq::gssapi_mechanism_base_t::acquire_credentials (char * service_name_, gss
     name_buf.length = strlen ((char *) name_buf.value) + 1;
 
     maj_stat = gss_import_name (&min_stat, &name_buf,
-                                GSS_C_NT_HOSTBASED_SERVICE, &server_name);
+                                name_type_, &server_name);
 
     if (maj_stat != GSS_S_COMPLETE)
         return -1;
 
     maj_stat = gss_acquire_cred (&min_stat, server_name, 0,
-                                 GSS_C_NO_OID_SET, GSS_C_ACCEPT,
+                                 GSS_C_NO_OID_SET, GSS_C_BOTH,
                                  cred_, NULL, NULL);
 
     if (maj_stat != GSS_S_COMPLETE)

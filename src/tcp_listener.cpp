@@ -33,7 +33,6 @@
 #include <string>
 #include <stdio.h>
 
-#include "platform.hpp"
 #include "tcp_listener.hpp"
 #include "stream_engine.hpp"
 #include "io_thread.hpp"
@@ -44,9 +43,7 @@
 #include "tcp.hpp"
 #include "socket_base.hpp"
 
-#ifdef ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#else
+#ifndef ZMQ_HAVE_WINDOWS
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -65,7 +62,7 @@ zmq::tcp_listener_t::tcp_listener_t (io_thread_t *io_thread_,
     own_t (io_thread_, options_),
     io_object_t (io_thread_),
     s (retired_fd),
-    handle(NULL),
+    handle((handle_t)NULL),
     socket (socket_)
 {
 }
@@ -100,12 +97,14 @@ void zmq::tcp_listener_t::in_event ()
         return;
     }
 
-    tune_tcp_socket (fd);
-    tune_tcp_keepalives (fd, options.tcp_keepalive, options.tcp_keepalive_cnt, options.tcp_keepalive_idle, options.tcp_keepalive_intvl);
-    tune_tcp_maxrt (fd, options.tcp_maxrt);
-
-    // remember our fd for ZMQ_SRCFD in messages
-    socket->set_fd(fd);
+    int rc = tune_tcp_socket (fd);
+    rc = rc | tune_tcp_keepalives (fd, options.tcp_keepalive, options.tcp_keepalive_cnt,
+        options.tcp_keepalive_idle, options.tcp_keepalive_intvl);
+    rc = rc | tune_tcp_maxrt (fd, options.tcp_maxrt);
+    if (rc != 0) {
+        socket->event_accept_failed (endpoint, zmq_errno());
+        return;
+    }
 
     //  Create the engine object for this connection.
     stream_engine_t *engine = new (std::nothrow)
@@ -180,7 +179,7 @@ int zmq::tcp_listener_t::set_address (const char *addr_)
     s = open_socket (address.family (), SOCK_STREAM, IPPROTO_TCP);
 
     //  IPv6 address family not supported, try automatic downgrade to IPv4.
-    if (s == -1 && address.family () == AF_INET6
+    if (s == zmq::retired_fd && address.family () == AF_INET6
     && errno == EAFNOSUPPORT
     && options.ipv6) {
         rc = address.resolve (addr_, true, false);
@@ -194,7 +193,7 @@ int zmq::tcp_listener_t::set_address (const char *addr_)
         errno = wsa_error_to_errno (WSAGetLastError ());
         return -1;
     }
-#if !defined _WIN32_WCE
+#if !defined _WIN32_WCE && !defined ZMQ_HAVE_WINDOWS_UWP
     //  On Windows, preventing sockets to be inherited by child processes.
     BOOL brc = SetHandleInformation ((HANDLE) s, HANDLE_FLAG_INHERIT, 0);
     win_assert (brc);
@@ -212,6 +211,10 @@ int zmq::tcp_listener_t::set_address (const char *addr_)
     // Set the IP Type-Of-Service for the underlying socket
     if (options.tos != 0)
         set_ip_type_of_service (s, options.tos);
+
+    // Bind the socket to a device if applicable
+    if (!options.bound_device.empty ())
+        bind_to_device (s, options.bound_device);
 
     //  Set the socket buffer limits for the underlying socket.
     if (options.sndbuf >= 0)
@@ -278,18 +281,22 @@ zmq::fd_t zmq::tcp_listener_t::accept ()
 #else
     socklen_t ss_len = sizeof (ss);
 #endif
+#if defined ZMQ_HAVE_SOCK_CLOEXEC
+    fd_t sock = ::accept4 (s, (struct sockaddr *) &ss, &ss_len, SOCK_CLOEXEC);
+#else
     fd_t sock = ::accept (s, (struct sockaddr *) &ss, &ss_len);
+#endif
 
 #ifdef ZMQ_HAVE_WINDOWS
     if (sock == INVALID_SOCKET) {
-		const int last_error = WSAGetLastError();
+        const int last_error = WSAGetLastError();
         wsa_assert (last_error == WSAEWOULDBLOCK ||
             last_error == WSAECONNRESET ||
             last_error == WSAEMFILE ||
             last_error == WSAENOBUFS);
         return retired_fd;
     }
-#if !defined _WIN32_WCE
+#if !defined _WIN32_WCE && !defined ZMQ_HAVE_WINDOWS_UWP
     //  On Windows, preventing sockets to be inherited by child processes.
     BOOL brc = SetHandleInformation ((HANDLE) sock, HANDLE_FLAG_INHERIT, 0);
     win_assert (brc);
@@ -304,9 +311,9 @@ zmq::fd_t zmq::tcp_listener_t::accept ()
     }
 #endif
 
+#if !defined ZMQ_HAVE_SOCK_CLOEXEC && defined FD_CLOEXEC
     //  Race condition can cause socket not to be closed (if fork happens
     //  between accept and this point).
-#ifdef FD_CLOEXEC
     int rc = fcntl (sock, F_SETFD, FD_CLOEXEC);
     errno_assert (rc != -1);
 #endif
@@ -329,6 +336,17 @@ zmq::fd_t zmq::tcp_listener_t::accept ()
 #endif
             return retired_fd;
         }
+    }
+
+    if (zmq::set_nosigpipe (sock)) {
+#ifdef ZMQ_HAVE_WINDOWS
+        int rc = closesocket (sock);
+        wsa_assert (rc != SOCKET_ERROR);
+#else
+        int rc = ::close (sock);
+        errno_assert (rc == 0);
+#endif
+        return retired_fd;
     }
 
     // Set the IP Type-Of-Service priority for this client socket

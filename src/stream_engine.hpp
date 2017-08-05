@@ -39,7 +39,6 @@
 #include "i_decoder.hpp"
 #include "options.hpp"
 #include "socket_base.hpp"
-#include "../include/zmq.h"
 #include "metadata.hpp"
 
 namespace zmq
@@ -116,8 +115,6 @@ namespace zmq
         int push_one_then_decode_and_push (msg_t *msg_);
 
         void mechanism_ready ();
-
-        int write_subscription_msg (msg_t *msg_);
 
         size_t add_property (unsigned char *ptr,
             const char *name, const void *value, size_t value_len);

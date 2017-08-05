@@ -37,7 +37,6 @@
 #include "stddef.h"
 #include "stdint.hpp"
 #include "tcp_address.hpp"
-#include "../include/zmq.h"
 
 #if defined ZMQ_HAVE_SO_PEERCRED || defined ZMQ_HAVE_LOCAL_PEERCRED
 #include <sys/types.h>
@@ -56,6 +55,8 @@ namespace zmq
     struct options_t
     {
         options_t ();
+
+        int set_curve_key(uint8_t * destination, const void * optval_, size_t optvallen_);
 
         int setsockopt (int option_, const void *optval_, size_t optvallen_);
         int getsockopt (int option_, void *optval_, size_t *optvallen_) const;
@@ -198,6 +199,10 @@ namespace zmq
         std::string gss_principal;
         std::string gss_service_principal;
 
+	//  Name types GSSAPI principals
+	int gss_principal_nt;
+	int gss_service_principal_nt;
+
         //  If true, gss encryption will be disabled
         bool gss_plaintext;
 
@@ -235,6 +240,9 @@ namespace zmq
         //  will be used as the File Descriptor instead of allocating a new
         //  one via the socket () system call.
         int use_fd;
+
+        // Device to bind the underlying socket to, eg. VRF or interface
+        std::string bound_device;
     };
 }
 

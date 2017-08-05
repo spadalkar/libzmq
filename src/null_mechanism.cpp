@@ -28,10 +28,6 @@
 */
 
 #include "precompiled.hpp"
-#include "platform.hpp"
-#ifdef ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#endif
 
 #include <stddef.h>
 #include <string.h>
@@ -79,9 +75,11 @@ int zmq::null_mechanism_t::next_handshake_command (msg_t *msg_)
             errno = EAGAIN;
             return -1;
         }
-        send_zap_request ();
+        int rc = send_zap_request ();
+        if (rc != 0)
+            return -1;
         zap_request_sent = true;
-        const int rc = receive_and_process_zap_reply ();
+        rc = receive_and_process_zap_reply ();
         if (rc != 0)
             return -1;
         zap_reply_received = true;
@@ -111,13 +109,15 @@ int zmq::null_mechanism_t::next_handshake_command (msg_t *msg_)
 
     //  Add socket type property
     const char *socket_type = socket_type_string (options.type);
-    ptr += add_property (ptr, "Socket-Type", socket_type, strlen (socket_type));
+    ptr += add_property (ptr, ZMQ_MSG_PROPERTY_SOCKET_TYPE, socket_type,
+                         strlen (socket_type));
 
     //  Add identity property
     if (options.type == ZMQ_REQ
     ||  options.type == ZMQ_DEALER
     ||  options.type == ZMQ_ROUTER)
-        ptr += add_property (ptr, "Identity", options.identity, options.identity_size);
+        ptr += add_property (ptr, ZMQ_MSG_PROPERTY_IDENTITY, options.identity,
+                             options.identity_size);
 
     const size_t command_size = ptr - command_buffer;
     const int rc = msg_->init_size (command_size);
@@ -216,7 +216,7 @@ zmq::mechanism_t::status_t zmq::null_mechanism_t::status () const
         return handshaking;
 }
 
-void zmq::null_mechanism_t::send_zap_request ()
+int zmq::null_mechanism_t::send_zap_request ()
 {
     int rc;
     msg_t msg;
@@ -226,7 +226,8 @@ void zmq::null_mechanism_t::send_zap_request ()
     errno_assert (rc == 0);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Version frame
     rc = msg.init_size (3);
@@ -234,7 +235,8 @@ void zmq::null_mechanism_t::send_zap_request ()
     memcpy (msg.data (), "1.0", 3);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Request id frame
     rc = msg.init_size (1);
@@ -242,7 +244,8 @@ void zmq::null_mechanism_t::send_zap_request ()
     memcpy (msg.data (), "1", 1);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Domain frame
     rc = msg.init_size (options.zap_domain.length ());
@@ -250,7 +253,8 @@ void zmq::null_mechanism_t::send_zap_request ()
     memcpy (msg.data (), options.zap_domain.c_str (), options.zap_domain.length ());
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Address frame
     rc = msg.init_size (peer_address.length ());
@@ -258,7 +262,8 @@ void zmq::null_mechanism_t::send_zap_request ()
     memcpy (msg.data (), peer_address.c_str (), peer_address.length ());
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Identity frame
     rc = msg.init_size (options.identity_size);
@@ -266,14 +271,18 @@ void zmq::null_mechanism_t::send_zap_request ()
     memcpy (msg.data (), options.identity, options.identity_size);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Mechanism frame
     rc = msg.init_size (4);
     errno_assert (rc == 0);
     memcpy (msg.data (), "NULL", 4);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
+
+    return 0;
 }
 
 int zmq::null_mechanism_t::receive_and_process_zap_reply ()
@@ -290,26 +299,21 @@ int zmq::null_mechanism_t::receive_and_process_zap_reply ()
     for (int i = 0; i < 7; i++) {
         rc = session->read_zap_msg (&msg [i]);
         if (rc == -1)
-            break;
+            return close_and_return (msg, -1);
         if ((msg [i].flags () & msg_t::more) == (i < 6? 0: msg_t::more)) {
             //  Temporary support for security debugging
             puts ("NULL I: ZAP handler sent incomplete reply message");
             errno = EPROTO;
-            rc = -1;
-            break;
+            return close_and_return (msg, -1);
         }
     }
-
-    if (rc != 0)
-        goto error;
 
     //  Address delimiter frame
     if (msg [0].size () > 0) {
         //  Temporary support for security debugging
         puts ("NULL I: ZAP handler sent malformed reply message");
         errno = EPROTO;
-        rc = -1;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Version frame
@@ -317,8 +321,7 @@ int zmq::null_mechanism_t::receive_and_process_zap_reply ()
         //  Temporary support for security debugging
         puts ("NULL I: ZAP handler sent bad version number");
         errno = EPROTO;
-        rc = -1;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Request id frame
@@ -326,8 +329,7 @@ int zmq::null_mechanism_t::receive_and_process_zap_reply ()
         //  Temporary support for security debugging
         puts ("NULL I: ZAP handler sent bad request ID");
         errno = EPROTO;
-        rc = -1;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Status code frame
@@ -335,8 +337,7 @@ int zmq::null_mechanism_t::receive_and_process_zap_reply ()
         //  Temporary support for security debugging
         puts ("NULL I: ZAP handler rejected client authentication");
         errno = EPROTO;
-        rc = -1;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Save status code
@@ -349,11 +350,14 @@ int zmq::null_mechanism_t::receive_and_process_zap_reply ()
     rc = parse_metadata (static_cast <const unsigned char*> (msg [6].data ()),
                          msg [6].size (), true);
 
-error:
+    if (rc != 0)
+        return close_and_return (msg, -1);
+
+    //  Close all reply frames
     for (int i = 0; i < 7; i++) {
         const int rc2 = msg [i].close ();
         errno_assert (rc2 == 0);
     }
 
-    return rc;
+    return 0;
 }

@@ -33,14 +33,9 @@
 #include <new>
 #include <algorithm>
 
-#include "macros.hpp"
-#include "platform.hpp"
-#if defined ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#endif
-
 #include "err.hpp"
 #include "pipe.hpp"
+#include "macros.hpp"
 #include "mtrie.hpp"
 
 zmq::mtrie_t::mtrie_t () :
@@ -53,9 +48,7 @@ zmq::mtrie_t::mtrie_t () :
 
 zmq::mtrie_t::~mtrie_t ()
 {
-    if (pipes) {
-        LIBZMQ_DELETE(pipes);
-    }
+    LIBZMQ_DELETE(pipes);
 
     if (count == 1) {
         zmq_assert (next.node);

@@ -30,11 +30,7 @@
 #ifndef __ZMQ_THREAD_HPP_INCLUDED__
 #define __ZMQ_THREAD_HPP_INCLUDED__
 
-#include "platform.hpp"
-
-#ifdef ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#else
+#ifndef ZMQ_HAVE_WINDOWS
 #include <pthread.h>
 #endif
 
@@ -71,11 +67,15 @@ namespace zmq
         // pthread. Has no effect on other platforms.
         void setSchedulingParameters(int priority_, int schedulingPolicy_);
 
+        // Sets the thread name, 16 characters max including terminating NUL.
+        // Only implemented for pthread. Has no effect on other platforms.
+        void setThreadName(const char *name_);
+
         //  These are internal members. They should be private, however then
         //  they would not be accessible from the main C routine of the thread.
         thread_fn *tfn;
         void *arg;
-        
+
     private:
 
 #ifdef ZMQ_HAVE_WINDOWS

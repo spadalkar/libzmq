@@ -30,7 +30,6 @@
 #ifndef __ZMQ_MUTEX_HPP_INCLUDED__
 #define __ZMQ_MUTEX_HPP_INCLUDED__
 
-#include "platform.hpp"
 #include "err.hpp"
 
 //  Mutex class encapsulates OS mutex in a platform-independent way.
@@ -182,6 +181,33 @@ namespace zmq
         scoped_lock_t (const scoped_lock_t&);
         const scoped_lock_t &operator = (const scoped_lock_t&);
     };
+
+
+    struct scoped_optional_lock_t
+    {
+        scoped_optional_lock_t (mutex_t* mutex_)
+            : mutex (mutex_)
+        {
+            if(mutex != NULL)
+                mutex->lock ();
+        }
+
+        ~scoped_optional_lock_t ()
+        {
+            if(mutex != NULL)
+                mutex->unlock ();
+        }
+
+    private:
+
+        mutex_t* mutex;
+
+        // Disable copy construction and assignment.
+        scoped_optional_lock_t (const scoped_lock_t&);
+        const scoped_optional_lock_t &operator = (const scoped_lock_t&);
+    };
+
+
 }
 
 #endif

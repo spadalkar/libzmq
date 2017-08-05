@@ -35,7 +35,6 @@
 #include "tcp_connecter.hpp"
 #include "stream_engine.hpp"
 #include "io_thread.hpp"
-#include "platform.hpp"
 #include "random.hpp"
 #include "err.hpp"
 #include "ip.hpp"
@@ -44,9 +43,7 @@
 #include "tcp_address.hpp"
 #include "session_base.hpp"
 
-#if defined ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#else
+#if !defined ZMQ_HAVE_WINDOWS
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -67,7 +64,7 @@ zmq::tcp_connecter_t::tcp_connecter_t (class io_thread_t *io_thread_,
     io_object_t (io_thread_),
     addr (addr_),
     s (retired_fd),
-    handle(NULL),
+    handle((handle_t)NULL),
     handle_valid (false),
     delayed_start (delayed_start_),
     connect_timer_started (false),
@@ -139,6 +136,7 @@ void zmq::tcp_connecter_t::out_event ()
     handle_valid = false;
 
     const fd_t fd = connect ();
+
     //  Handle the error condition by attempt to reconnect.
     if (fd == retired_fd) {
         close ();
@@ -146,12 +144,15 @@ void zmq::tcp_connecter_t::out_event ()
         return;
     }
 
-    tune_tcp_socket (fd);
-    tune_tcp_keepalives (fd, options.tcp_keepalive, options.tcp_keepalive_cnt, options.tcp_keepalive_idle, options.tcp_keepalive_intvl);
-    tune_tcp_maxrt (fd, options.tcp_maxrt);
-
-    // remember our fd for ZMQ_SRCFD in messages
-    socket->set_fd (fd);
+    int rc = tune_tcp_socket (fd);
+    rc = rc | tune_tcp_keepalives (fd, options.tcp_keepalive, options.tcp_keepalive_cnt,
+        options.tcp_keepalive_idle, options.tcp_keepalive_intvl);
+    rc = rc | tune_tcp_maxrt (fd, options.tcp_maxrt);
+    if (rc != 0) {
+        close ();
+        add_reconnect_timer ();
+        return;
+    }
 
     //  Create the engine object for this connection.
     stream_engine_t *engine = new (std::nothrow)
@@ -273,7 +274,7 @@ int zmq::tcp_connecter_t::open ()
     s = open_socket (tcp_addr->family (), SOCK_STREAM, IPPROTO_TCP);
 
     //  IPv6 address family not supported, try automatic downgrade to IPv4.
-    if (s == -1 && tcp_addr->family () == AF_INET6
+    if (s == zmq::retired_fd && tcp_addr->family () == AF_INET6
     && errno == EAFNOSUPPORT
     && options.ipv6) {
         rc = addr->resolved.tcp_addr->resolve (
@@ -304,6 +305,10 @@ int zmq::tcp_connecter_t::open ()
     if (options.tos != 0)
         set_ip_type_of_service (s, options.tos);
 
+    // Bind the socket to a device if applicable
+    if (!options.bound_device.empty ())
+        bind_to_device (s, options.bound_device);
+
     // Set the socket to non-blocking mode so that we get async connect().
     unblock_socket (s);
 
@@ -319,6 +324,18 @@ int zmq::tcp_connecter_t::open ()
 
     // Set a source address for conversations
     if (tcp_addr->has_src_addr ()) {
+        //  Allow reusing of the address, to connect to different servers
+        //  using the same source port on the client.
+        int flag = 1;
+#ifdef ZMQ_HAVE_WINDOWS
+        rc = setsockopt (s, SOL_SOCKET, SO_REUSEADDR, (const char*) &flag,
+                sizeof (int));
+        wsa_assert (rc != SOCKET_ERROR);
+#else
+        rc = setsockopt (s, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof (int));
+        errno_assert (rc == 0);
+#endif
+
         rc = ::bind (s, tcp_addr->src_addr (), tcp_addr->src_addrlen ());
         if (rc == -1)
             return -1;

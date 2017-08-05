@@ -1,5 +1,5 @@
 /*
-    Copyright (c) 2016 Contributors as noted in the AUTHORS file
+    Copyright (c) 2016-2017 Contributors as noted in the AUTHORS file
 
     This file is part of libzmq, the ZeroMQ core engine in C++.
 
@@ -27,14 +27,18 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+/*
+    The precompiled header is not used for c files so this is required here.
+*/
 #include "platform.hpp"
+
 #if defined (ZMQ_USE_TWEETNACL)
 
 /*
     Disable warnings for this source only, rather than for the whole
-    codebase when building with C99 or with Microsoft's compiler
+    codebase when building with C99 (gcc >= 4.2) or with Microsoft's compiler
 */
-#if defined __GNUC__ && __STDC_VERSION__ < 201112L
+#if defined __GNUC__ && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 2)) && __STDC_VERSION__ < 201112L
 #   pragma GCC diagnostic ignored "-Wsign-compare"
 #elif defined _MSC_VER
 #   pragma warning (disable:4018 4244 4146)
@@ -479,7 +483,7 @@ int crypto_scalarmult(u8 *q,const u8 *n,const u8 *p)
 }
 
 int crypto_scalarmult_base(u8 *q,const u8 *n)
-{ 
+{
   return crypto_scalarmult(q,n,_9);
 }
 
@@ -528,7 +532,7 @@ static u64 Sigma1(u64 x) { return R(x,14) ^ R(x,18) ^ R(x,41); }
 static u64 sigma0(u64 x) { return R(x, 1) ^ R(x, 8) ^ (x >> 7); }
 static u64 sigma1(u64 x) { return R(x,19) ^ R(x,61) ^ (x >> 6); }
 
-static const u64 K[80] = 
+static const u64 K[80] =
 {
   0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL, 0xe9b5dba58189dbbcULL,
   0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL, 0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL,
@@ -569,8 +573,8 @@ int crypto_hashblocks(u8 *x,const u8 *m,u64 n)
       b[3] += t;
       FOR(j,8) a[(j+1)%8] = b[j];
       if (i%16 == 15)
-	FOR(j,16)
-	  w[j] += w[(j+9)%16] + sigma0(w[(j+1)%16]) + sigma1(w[(j+14)%16]);
+        FOR(j,16)
+          w[j] += w[(j+9)%16] + sigma0(w[(j+1)%16]) + sigma1(w[(j+14)%16]);
     }
 
     FOR(i,8) { a[i] += z[i]; z[i] = a[i]; }
@@ -624,7 +628,7 @@ int crypto_hash(u8 *out,const u8 *m,u64 n)
 sv add(gf p[4],gf q[4])
 {
   gf a,b,c,d,t,e,f,g,h;
-  
+
   Z(a, p[1], p[0]);
   Z(t, q[1], q[0]);
   M(a, a, t);
@@ -656,7 +660,7 @@ sv cswap(gf p[4],gf q[4],u8 b)
 sv pack(u8 *r,gf p[4])
 {
   gf tx, ty, zi;
-  inv25519(zi, p[2]); 
+  inv25519(zi, p[2]);
   M(tx, p[0], zi);
   M(ty, p[1], zi);
   pack25519(r, ty);
@@ -848,7 +852,7 @@ int crypto_sign_open(u8 *m,u64 *mlen,const u8 *sm,u64 n,const u8 *pk)
 #ifdef ZMQ_HAVE_WINDOWS
 
 #include <windows.h>
-#include <WinCrypt.h>
+#include <wincrypt.h>
 
 #define NCP ((HCRYPTPROV) 0)
 
@@ -894,32 +898,45 @@ int randombytes_close(void)
     return rc;
 }
 
+int sodium_init (void)
+{
+    return 0;
+}
+
 #else
 
+#include <unistd.h>
+#include <assert.h>
+
+#ifdef ZMQ_HAVE_GETRANDOM
+#include <sys/random.h>
+#else
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
 
 static int fd = -1;
+#endif
 
 void randombytes (unsigned char *x,unsigned long long xlen)
 {
     int i;
-    if (fd == -1) {
-        for (;;) {
-            fd = open("/dev/urandom",O_RDONLY);
-            if (fd != -1) break;
-                sleep (1);
-        }
-    }
+#ifndef ZMQ_HAVE_GETRANDOM
+    //  Require that random_open has already been called, to avoid
+    //  race conditions.
+    assert (fd != -1);
+#endif
     while (xlen > 0) {
         if (xlen < 1048576)
             i = xlen;
         else
             i = 1048576;
 
+#ifdef ZMQ_HAVE_GETRANDOM
+        i = getrandom (x, i);
+#else
         i = read(fd,x,i);
+#endif
         if (i < 1) {
             sleep (1);
             continue;
@@ -929,14 +946,41 @@ void randombytes (unsigned char *x,unsigned long long xlen)
     }
 }
 
+//  Do not call manually! Use random_close from random.hpp
 int randombytes_close (void)
 {
     int rc = -1;
+#ifndef ZMQ_HAVE_GETRANDOM
     if (fd != -1 && close(fd) == 0) {
         fd = -1;
         rc = 0;
     }
+#endif // ZMQ_HAVE_GETRANDOM
     return rc;
+}
+
+//  Do not call manually! Use random_open from random.hpp
+int sodium_init (void)
+{
+#ifndef ZMQ_HAVE_GETRANDOM
+    if (fd == -1) {
+        for (;;) {
+            int flags = O_RDONLY;
+#ifdef ZMQ_HAVE_O_CLOEXEC
+            flags |= O_CLOEXEC;
+#endif
+            fd = open ("/dev/urandom", flags);
+            if (fd != -1)
+                break;
+            sleep (1);
+        }
+#if !defined ZMQ_HAVE_O_CLOEXEC && defined FD_CLOEXEC
+        int rc = fcntl (fd, F_SETFD, FD_CLOEXEC);
+        assert (rc != -1);
+#endif
+    }
+#endif // ZMQ_HAVE_GETRANDOM
+    return 0;
 }
 
 #endif

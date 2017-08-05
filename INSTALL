@@ -14,10 +14,59 @@ If you clone the Git repository then you should start by running the
 command `./autogen.sh`. This is not necessary if you get the source
 packages.
 
+CMake installation
+==================
+
+The following options are available for cmake invocation:
+
+- `WITH_PERF_TOOL'
+    Enables the build of performance tools. Default value is ON.
+- `ZMQ_BUILD_TESTS'
+    Builds ZeroMQ tests. Default value is ON.
+- `ENABLE_CPACK'
+    Enables CPack build rules. This option has effect on Windows
+    platform only. Default value is ON. Turn it to OFF if you
+    don't want the runtime libraries to be installed (typically
+    if your installation destination already contains them).
+    
+
+Example: installing ZeroMQ on Windows with no tests, no performance
+tools, and no runtime library copy:
+
+cmake -G "NMake Makefiles" -D WITH_PERF_TOOL=OFF -D ZMQ_BUILD_TESTS=OFF
+-D ENABLE_CPACK=OFF -D CMAKE_BUILD_TYPE=Release
+
 Windows Builds
 ==============
 
 For Windows building, see the libzmq\builds\msvc\readme.txt file.
+
+The library can also be built for the Windows 10 UWP platform through CMake :
+cmake -H. -B<build dir> -G"Visual Studio 14 2015 Win64" \
+   -DCMAKE_SYSTEM_NAME=WindowsStore -DCMAKE_SYSTEM_VERSION=10.0 \
+   -DENABLE_CURVE=OFF -DZMQ_BUILD_TESTS=OFF
+
+In VS 2012 it is mandatory to increase the default stack size of 1 MB to
+at least 2 MB due to implementation of std::map intermittently requiring
+substantial amount of stack and causing stack overflow. ZeroMQ generally
+needs more stack when FD_SETSIZE is higher.
+In all Windows builds it is recommended to start with at least 2 MB stack
+size unless application using ZeroMQ is using large number of threads which
+can cause substantial consumption of virtual address space, especially if
+32 bit build is used.
+Generally, programmer needs to tune the stack to balance memory consumption
+but never get into situation that stack is overflown.
+
+Windows Builds - Wine
+=====================
+
+To use Windows binaries on *nix via Wine, it is necessary to ensure that the
+kernel TCP buffers are large enough. On some systems, like OS X, they are too
+small by default.
+They need to be set to at least one MB as a workaround for issue:
+https://github.com/zeromq/libzmq/issues/1608
+
+sudo sysctl -w net.inet.tcp.sendspace=1300000
 
 Basic Installation
 ==================
@@ -67,7 +116,8 @@ The simplest way to compile this package is:
   2. Type `make' to compile the package.
 
   3. Optionally, type `make check' to run any self-tests that come with
-     the package.
+     the package. Note that `make -j check' is not supported as some
+     tests share infrastructure and cannot be run in parallel.
 
   4. Type `make install' to install the programs and any data files and
      documentation.

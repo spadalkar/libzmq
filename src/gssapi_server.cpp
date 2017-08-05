@@ -28,13 +28,8 @@
 */
 
 #include "precompiled.hpp"
-#include "platform.hpp"
 
 #ifdef HAVE_LIBGSSAPI_KRB5
-
-#ifdef ZMQ_HAVE_WINDOWS
-#include "windows.hpp"
-#endif
 
 #include <string.h>
 #include <string>
@@ -63,8 +58,8 @@ zmq::gssapi_server_t::gssapi_server_t (session_base_t *session_,
         principal_name = static_cast <char *>(malloc(principal_size+1));
         assert(principal_name);
         memcpy(principal_name, options_.gss_principal.c_str(), principal_size+1 );
-
-        if (acquire_credentials (principal_name, &cred) != 0)
+        gss_OID name_type = convert_nametype (options_.gss_principal_nt);
+        if (acquire_credentials (principal_name, &cred, name_type) != 0)
             maj_stat = GSS_S_FAILURE;
     }
 }
@@ -125,10 +120,14 @@ int zmq::gssapi_server_t::process_handshake_command (msg_t *msg_)
 
     if (security_context_established) {
         //  Use ZAP protocol (RFC 27) to authenticate the user.
+        //  Note that rc will be -1 only if ZAP is not set up, but if it was
+        //  requested and it does not work properly the program will abort.
         bool expecting_zap_reply = false;
         int rc = session->zap_connect ();
         if (rc == 0) {
-            send_zap_request();
+            rc = send_zap_request ();
+            if (rc != 0)
+                return -1;
             rc = receive_and_process_zap_reply ();
             if (rc != 0) {
                 if (errno != EAGAIN)
@@ -152,7 +151,7 @@ int zmq::gssapi_server_t::process_handshake_command (msg_t *msg_)
     return 0;
 }
 
-void zmq::gssapi_server_t::send_zap_request ()
+int zmq::gssapi_server_t::send_zap_request ()
 {
     int rc;
     msg_t msg;
@@ -162,7 +161,8 @@ void zmq::gssapi_server_t::send_zap_request ()
     errno_assert (rc == 0);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Version frame
     rc = msg.init_size (3);
@@ -170,7 +170,8 @@ void zmq::gssapi_server_t::send_zap_request ()
     memcpy (msg.data (), "1.0", 3);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Request ID frame
     rc = msg.init_size (1);
@@ -178,7 +179,8 @@ void zmq::gssapi_server_t::send_zap_request ()
     memcpy (msg.data (), "1", 1);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Domain frame
     rc = msg.init_size (options.zap_domain.length ());
@@ -186,7 +188,8 @@ void zmq::gssapi_server_t::send_zap_request ()
     memcpy (msg.data (), options.zap_domain.c_str (), options.zap_domain.length ());
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Address frame
     rc = msg.init_size (peer_address.length ());
@@ -194,7 +197,8 @@ void zmq::gssapi_server_t::send_zap_request ()
     memcpy (msg.data (), peer_address.c_str (), peer_address.length ());
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Identity frame
     rc = msg.init_size (options.identity_size);
@@ -202,7 +206,8 @@ void zmq::gssapi_server_t::send_zap_request ()
     memcpy (msg.data (), options.identity, options.identity_size);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Mechanism frame
     rc = msg.init_size (6);
@@ -210,7 +215,8 @@ void zmq::gssapi_server_t::send_zap_request ()
     memcpy (msg.data (), "GSSAPI", 6);
     msg.set_flags (msg_t::more);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
 
     //  Principal frame
     gss_buffer_desc principal;
@@ -220,8 +226,11 @@ void zmq::gssapi_server_t::send_zap_request ()
     errno_assert (rc == 0);
     memcpy (msg.data (), principal.value, principal.length);
     rc = session->write_zap_msg (&msg);
-    errno_assert (rc == 0);
     gss_release_buffer(&min_stat, &principal);
+    if (rc != 0)
+        return close_and_return (&msg, -1);
+
+    return 0;
 }
 
 int zmq::gssapi_server_t::receive_and_process_zap_reply ()
@@ -238,43 +247,35 @@ int zmq::gssapi_server_t::receive_and_process_zap_reply ()
     for (int i = 0; i < 7; i++) {
         rc = session->read_zap_msg (&msg [i]);
         if (rc == -1)
-            break;
+            return close_and_return (msg, -1);
         if ((msg [i].flags () & msg_t::more) == (i < 6? 0: msg_t::more)) {
             errno = EPROTO;
-            rc = -1;
-            break;
+            return close_and_return (msg, -1);
         }
     }
 
-    if (rc != 0)
-        goto error;
-
     //  Address delimiter frame
     if (msg [0].size () > 0) {
-        rc = -1;
         errno = EPROTO;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Version frame
     if (msg [1].size () != 3 || memcmp (msg [1].data (), "1.0", 3)) {
-        rc = -1;
         errno = EPROTO;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Request id frame
     if (msg [2].size () != 1 || memcmp (msg [2].data (), "1", 1)) {
-        rc = -1;
         errno = EPROTO;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Status code frame
     if (msg [3].size () != 3 || memcmp (msg [3].data (), "200", 3)) {
-        rc = -1;
         errno = EACCES;
-        goto error;
+        return close_and_return (msg, -1);
     }
 
     //  Save user id
@@ -284,13 +285,16 @@ int zmq::gssapi_server_t::receive_and_process_zap_reply ()
     rc = parse_metadata (static_cast <const unsigned char*> (msg [6].data ()),
                          msg [6].size (), true);
 
-error:
+    if (rc != 0)
+        return close_and_return (msg, -1);
+
+    //  Close all reply frames
     for (int i = 0; i < 7; i++) {
         const int rc2 = msg [i].close ();
         errno_assert (rc2 == 0);
     }
 
-    return rc;
+    return 0;
 }
 
 
