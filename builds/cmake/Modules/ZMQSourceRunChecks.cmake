@@ -41,8 +41,8 @@ macro(zmq_check_o_cloexec)
 
 int main(int argc, char *argv [])
 {
-    int s = open ("/dev/null", O_CLOEXEC | O_RDONLY);
-    return (s == -1);
+    int s = open (\"/dev/null\", O_CLOEXEC | O_RDONLY);
+    return s == -1;
 }
 "
     ZMQ_HAVE_O_CLOEXEC)
@@ -194,20 +194,14 @@ macro(zmq_check_tcp_tipc)
 int main(int argc, char *argv [])
 {
     struct sockaddr_tipc topsrv;
-    int sd = socket(AF_TIPC, SOCK_SEQPACKET, 0);
-    if (sd == -EAFNOSUPPORT) {
-        return 1;
-    }
+    int sd = socket(PF_TIPC, SOCK_SEQPACKET, 0);
     memset(&topsrv, 0, sizeof(topsrv));
     topsrv.family = AF_TIPC;
     topsrv.addrtype = TIPC_ADDR_NAME;
     topsrv.addr.name.name.type = TIPC_TOP_SRV;
     topsrv.addr.name.name.instance = TIPC_TOP_SRV;
     fcntl(sd, F_SETFL, O_NONBLOCK);
-    if (connect(sd, (struct sockaddr *)&topsrv, sizeof(topsrv)) != 0) {
-        if (errno != EINPROGRESS)
-            return -1;
-    }
+    tipc_addr(0, 0, 0);
 }
 "
     ZMQ_HAVE_TIPC)
@@ -218,7 +212,7 @@ macro(zmq_check_pthread_setname)
   message(STATUS "Checking pthread_setname signature")
   set(SAVE_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
   set(CMAKE_REQUIRED_FLAGS "-D_GNU_SOURCE -Werror -pthread")
-  check_c_source_runs(
+  check_c_source_compiles(
     "
 #include <pthread.h>
 
@@ -229,7 +223,7 @@ int main(int argc, char *argv [])
 }
 "
     ZMQ_HAVE_PTHREAD_SETNAME_1)
-  check_c_source_runs(
+  check_c_source_compiles(
     "
 #include <pthread.h>
 
@@ -240,7 +234,7 @@ int main(int argc, char *argv [])
 }
 "
     ZMQ_HAVE_PTHREAD_SETNAME_2)
-  check_c_source_runs(
+  check_c_source_compiles(
     "
 #include <pthread.h>
 
@@ -251,7 +245,7 @@ int main(int argc, char *argv [])
 }
 "
     ZMQ_HAVE_PTHREAD_SETNAME_3)
-  check_c_source_runs(
+  check_c_source_compiles(
     "
 #include <pthread.h>
 
@@ -265,6 +259,25 @@ int main(int argc, char *argv [])
   set(CMAKE_REQUIRED_FLAGS ${SAVE_CMAKE_REQUIRED_FLAGS})
 endmacro()
 
+macro(zmq_check_pthread_setaffinity)
+  message(STATUS "Checking pthread_setaffinity signature")
+  set(SAVE_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})
+  set(CMAKE_REQUIRED_FLAGS "-D_GNU_SOURCE -Werror -pthread")
+  check_c_source_compiles(
+    "
+#include <pthread.h>
+
+int main(int argc, char *argv [])
+{
+    cpu_set_t test; 
+    pthread_setaffinity_np (pthread_self(), sizeof(cpu_set_t), &test);
+    return 0;
+}
+"
+    ZMQ_HAVE_PTHREAD_SET_AFFINITY)
+  set(CMAKE_REQUIRED_FLAGS ${SAVE_CMAKE_REQUIRED_FLAGS})
+endmacro()
+
 
 macro(zmq_check_getrandom)
   message(STATUS "Checking whether getrandom is supported")
@@ -275,8 +288,46 @@ macro(zmq_check_getrandom)
 int main (int argc, char *argv [])
 {
     char buf[4];
-    getrandom(buf, 4, 0);
+    int rc = getrandom(buf, 4, 0);
+    return rc == -1 ? 1 : 0;
 }
 "
     ZMQ_HAVE_GETRANDOM)
+endmacro()
+
+macro(zmq_check_noexcept)
+  message(STATUS "Checking whether noexcept is supported")
+  check_cxx_source_compiles(
+"
+struct X 
+{
+    X(int i) noexcept {}
+};
+
+int main(int argc, char *argv [])
+{
+    X x(5);
+    return 0;
+}
+"
+    ZMQ_HAVE_NOEXCEPT)
+endmacro()
+
+macro(zmq_check_so_priority)
+  message(STATUS "Checking whether SO_PRIORITY is supported")
+  check_c_source_runs(
+    "
+#include <sys/types.h>
+#include <sys/socket.h>
+
+int main (int argc, char *argv [])
+{
+    int s, rc, opt = 1;
+    return (
+        ((s = socket (PF_INET, SOCK_STREAM, 0)) == -1) ||
+        ((rc = setsockopt (s, SOL_SOCKET, SO_PRIORITY, (char*) &opt, sizeof (int))) == -1)
+    );
+}
+"
+    ZMQ_HAVE_SO_PRIORITY)
 endmacro()

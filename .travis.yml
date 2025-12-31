@@ -4,14 +4,13 @@ language: c
 
 os:
 - linux
-- osx
 
-dist: trusty
+dist: bionic
+
+cache: ccache
 
 env:
   matrix:
-    - BUILD_TYPE=default CURVE=tweetnacl DRAFT=enabled
-    - BUILD_TYPE=cmake CURVE=tweetnacl
     - BUILD_TYPE=default
   # tokens to deploy releases on OBS and create/delete temporary branch on Github.
   # 1) Create a token on https://github.com/settings/tokens/new with "public_repo"
@@ -22,72 +21,7 @@ env:
     - secure: aaIs9Y44FYp9VFCqa6LLD4illBH4aUfbS0zzzbAQ5xJvD6NfBsMiKEIhf/kRNCHAtP+1VfQVOejTD6/i08ALsVr3cZD9oB/t7874tz2/jeZUIhRNo+1KwyaVqNg0yUSV6ASIoq4aOfuGnjBlezNQ8LQ2bjQB2m4Enl5wxoYcYdA=
     - secure: YFrcedBIKe0NR1WC6qQi9phZgtnzOiBIXm40TirvCtstV4eVnSouKgtQfLLArZ4o2tjflq4grQQNo1rJatvyi5YPOXsMcndsni18S+4Ffu8qbECdtPrK52vBweuf7q9oV9Ydax0Fm4bEqEMOZ2/mRBy3nK+mgsE3upeMwyWR0Zw=
     - secure: lbZSzmqN39QdJwewKOZgq/1ijPKuyx9MFrGzMqXj2+eOSlaZS/tNavHMdKJOev+qJGK9wxmwzxOxS10AiH+AvN7WBacXX4ZtudjScz2HKJRDWTKyzMbzyScq51afniItzrsm+Vo8NHkenNFkux0sSbh0aHlpkLwrGQu+WZWcDN4=
-
-matrix:
-  include:
-  - env: BUILD_TYPE=default CURVE=tweetnacl IPv6=ON
-    os: linux
-    dist: precise
-    sudo: false
-  - env: BUILD_TYPE=coverage CURVE=tweetnacl DRAFT=enabled
-    os: linux
-    addons:
-      apt:
-        packages:
-        - lcov
-  - env: BUILD_TYPE=valgrind CURVE=tweetnacl DRAFT=enabled
-    os: linux
-    addons:
-      apt:
-        packages:
-        - valgrind
-  - env: BUILD_TYPE=default CURVE=libsodium
-    os: linux
-    addons:
-      apt:
-        sources:
-        - sourceline: 'deb http://download.opensuse.org/repositories/network:/messaging:/zeromq:/git-stable/xUbuntu_14.04/ ./'
-          key_url: 'http://download.opensuse.org/repositories/network:/messaging:/zeromq:/git-stable/xUbuntu_14.04/Release.key'
-        packages:
-        - libsodium-dev
-        - asciidoc
-        - xmlto
-  - env: BUILD_TYPE=default CURVE=libsodium DRAFT=enabled
-    os: linux
-    addons:
-      apt:
-        sources:
-        - sourceline: 'deb http://download.opensuse.org/repositories/network:/messaging:/zeromq:/git-stable/xUbuntu_14.04/ ./'
-          key_url: 'http://download.opensuse.org/repositories/network:/messaging:/zeromq:/git-stable/xUbuntu_14.04/Release.key'
-        packages:
-        - libsodium-dev
-  - env: BUILD_TYPE=default CURVE=libsodium DRAFT=enabled
-    os: osx
-  - env: BUILD_TYPE=default CURVE=tweetnacl DRAFT=enabled ADDRESS_SANITIZER=enabled
-    os: linux
-    dist: trusty
-    addons:
-      apt:
-        sources:
-        - sourceline: 'ppa:ubuntu-toolchain-r/test'
-        packages:
-        - g++-6
-        - gcc-6
-  - env: BUILD_TYPE=android CURVE=tweetnacl
-    os: linux
-    dist: trusty
-
-sudo: required
-
-before_install:
-- if [ $TRAVIS_OS_NAME == "osx" -a $BUILD_TYPE == "android" ] ; then brew install binutils ; fi
-- if [ $TRAVIS_OS_NAME == "osx" -a $CURVE == "libsodium" ] ; then brew install libsodium ; fi
-
-before_script:
-# ZMQ stress tests need more open socket (files) than the usual default
-# On OSX, it seems the way to set the max files limit is constantly changing, so
-# try to use all known knobs to ensure compatibility across various versions
-- if [ $TRAVIS_OS_NAME == "osx" ] ; then sudo sysctl -w kern.maxfiles=64000 ; sudo sysctl -w kern.maxfilesperproc=64000 ; sudo launchctl limit maxfiles 64000 64000 ; ulimit -n 64000; fi
+    - secure: "ZFL7hLJlGwYix8fF835OnQYakBt/o5iS7IfSW7el44ejEvGAOM9O5/ufxCcqSqn8Np7nOaM3RriAVTqWPZD6S7tMeflGTSGYHPYwWUc83z4rUPyG2FWVKXdB8ufpebAwu3hCgLiSmVeoQG47dl6xNk1oKCd+3UIjgz33u1Ecfps="
 
 # Build and check this project according to the BUILD_TYPE
 script: ./ci_build.sh

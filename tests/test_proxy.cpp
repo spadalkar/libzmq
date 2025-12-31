@@ -1,33 +1,33 @@
-/*
-    Copyright (c) 2007-2017 Contributors as noted in the AUTHORS file
-
-    This file is part of libzmq, the ZeroMQ core engine in C++.
-
-    libzmq is free software; you can redistribute it and/or modify it under
-    the terms of the GNU Lesser General Public License (LGPL) as published
-    by the Free Software Foundation; either version 3 of the License, or
-    (at your option) any later version.
-
-    As a special exception, the Contributors give you permission to link
-    this library with independent modules to produce an executable,
-    regardless of the license terms of these independent modules, and to
-    copy and distribute the resulting executable under terms of your choice,
-    provided that you also meet, for each linked independent module, the
-    terms and conditions of the license of that module. An independent
-    module is a module which is not derived from or based on this library.
-    If you modify this library, you must extend this exception to your
-    version of the library.
-
-    libzmq is distributed in the hope that it will be useful, but WITHOUT
-    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-    FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
-    License for more details.
-
-    You should have received a copy of the GNU Lesser General Public License
-    along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
+/* SPDX-License-Identifier: MPL-2.0 */
 
 #include "testutil.hpp"
+#include "testutil_unity.hpp"
+
+#include <stdlib.h>
+#include <string.h>
+
+#define CONTENT_SIZE 13
+#define CONTENT_SIZE_MAX 32
+#define ROUTING_ID_SIZE 10
+#define ROUTING_ID_SIZE_MAX 32
+#define QT_WORKERS 5
+#define QT_CLIENTS 3
+#define is_verbose 0
+
+struct thread_data
+{
+    int id;
+};
+
+void *g_clients_pkts_out = NULL;
+void *g_workers_pkts_out = NULL;
+void *control_context = NULL;
+
+void setUp ()
+{
+    setup_test_context ();
+}
+
 
 // Asynchronous client-to-server (DEALER to ROUTER) - pure libzmq
 //
@@ -42,101 +42,109 @@
 // It collects responses as they arrive, and it prints them out. We will
 // run several client tasks in parallel, each with a different random ID.
 
-#define CONTENT_SIZE 13
-#define CONTENT_SIZE_MAX 32
-#define ID_SIZE 10
-#define ID_SIZE_MAX 32
-#define QT_WORKERS    5
-#define QT_CLIENTS    3
-#define is_verbose 0
-
-struct thread_data {
-    void *ctx;
-    int id;
-};
-
-static void
-client_task (void *db)
+static void client_task (void *db_)
 {
-    struct thread_data *databag = (struct thread_data *)db;
+    const thread_data *const databag = static_cast<const thread_data *> (db_);
     // Endpoint socket gets random port to avoid test failing when port in use
-    void *endpoint = zmq_socket (databag->ctx, ZMQ_PAIR);
-    assert (endpoint);
+    void *endpoint = zmq_socket (get_test_context (), ZMQ_PAIR);
+    TEST_ASSERT_NOT_NULL (endpoint);
     int linger = 0;
-    int rc = zmq_setsockopt (endpoint, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    char endpoint_source [256];
-    sprintf (endpoint_source, "inproc://endpoint%d", databag->id);
-    rc = zmq_connect (endpoint, endpoint_source);
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (endpoint, ZMQ_LINGER, &linger, sizeof (linger)));
+    char endpoint_source[256];
+    snprintf (endpoint_source, 256 * sizeof (char), "inproc://endpoint%d",
+              databag->id);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (endpoint, endpoint_source));
     char *my_endpoint = s_recv (endpoint);
-    assert (my_endpoint);
+    TEST_ASSERT_NOT_NULL (my_endpoint);
 
-    void *client = zmq_socket (databag->ctx, ZMQ_DEALER);
-    assert (client);
+    void *client = zmq_socket (get_test_context (), ZMQ_DEALER);
+    TEST_ASSERT_NOT_NULL (client);
 
     // Control socket receives terminate command from main over inproc
-    void *control = zmq_socket (databag->ctx, ZMQ_SUB);
-    assert (control);
-    rc = zmq_setsockopt (control, ZMQ_SUBSCRIBE, "", 0);
-    assert (rc == 0);
-    rc = zmq_setsockopt (control, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_connect (control, "inproc://control");
-    assert (rc == 0);
+    void *control = zmq_socket (control_context, ZMQ_SUB);
+    TEST_ASSERT_NOT_NULL (control);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_setsockopt (control, ZMQ_SUBSCRIBE, "", 0));
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (control, ZMQ_LINGER, &linger, sizeof (linger)));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (control, "inproc://control"));
 
-    char content [CONTENT_SIZE_MAX];
-    // Set random identity to make tracing easier
-    char identity [ID_SIZE];
-    sprintf (identity, "%04X-%04X", rand() % 0xFFFF, rand() % 0xFFFF);
-    rc = zmq_setsockopt (client, ZMQ_IDENTITY, identity, ID_SIZE); // includes '\0' as an helper for printf
-    assert (rc == 0);
+    char content[CONTENT_SIZE_MAX] = {};
+    // Set random routing id to make tracing easier
+    char routing_id[ROUTING_ID_SIZE] = {};
+    snprintf (routing_id, ROUTING_ID_SIZE * sizeof (char), "%04X-%04X",
+              rand () % 0xFFFF, rand () % 0xFFFF);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_setsockopt (
+      client, ZMQ_ROUTING_ID, routing_id,
+      ROUTING_ID_SIZE)); // includes '\0' as an helper for printf
     linger = 0;
-    rc = zmq_setsockopt (client, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_connect (client, my_endpoint);
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (client, ZMQ_LINGER, &linger, sizeof (linger)));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (client, my_endpoint));
 
-    zmq_pollitem_t items [] = { { client, 0, ZMQ_POLLIN, 0 }, { control, 0, ZMQ_POLLIN, 0 } };
+    zmq_pollitem_t items[] = {{client, 0, ZMQ_POLLIN, 0},
+                              {control, 0, ZMQ_POLLIN, 0}};
     int request_nbr = 0;
     bool run = true;
+    bool keep_sending = true;
     while (run) {
         // Tick once per 200 ms, pulling in arriving messages
         int centitick;
         for (centitick = 0; centitick < 20; centitick++) {
             zmq_poll (items, 2, 10);
-            if (items [0].revents & ZMQ_POLLIN) {
+            if (items[0].revents & ZMQ_POLLIN) {
                 int rcvmore;
                 size_t sz = sizeof (rcvmore);
-                rc = zmq_recv (client, content, CONTENT_SIZE_MAX, 0);
-                assert (rc == CONTENT_SIZE);
-                if (is_verbose) printf("client receive - identity = %s    content = %s\n", identity, content);
+                int rc = TEST_ASSERT_SUCCESS_ERRNO (
+                  zmq_recv (client, content, CONTENT_SIZE_MAX, 0));
+                TEST_ASSERT_EQUAL_INT (CONTENT_SIZE, rc);
+                if (is_verbose)
+                    printf (
+                      "client receive - routing_id = %s    content = %s\n",
+                      routing_id, content);
                 //  Check that message is still the same
-                assert (memcmp (content, "request #", 9) == 0);
-                rc = zmq_getsockopt (client, ZMQ_RCVMORE, &rcvmore, &sz);
-                assert (rc == 0);
-                assert (!rcvmore);
+                TEST_ASSERT_EQUAL_STRING_LEN ("request #", content, 9);
+                TEST_ASSERT_SUCCESS_ERRNO (
+                  zmq_getsockopt (client, ZMQ_RCVMORE, &rcvmore, &sz));
+                TEST_ASSERT_FALSE (rcvmore);
             }
-            if (items [1].revents & ZMQ_POLLIN) {
-                rc = zmq_recv (control, content, CONTENT_SIZE_MAX, 0);
-                if (is_verbose) printf("client receive - identity = %s    command = %s\n", identity, content);
-                if (memcmp (content, "TERMINATE", 9) == 0) {
-                    run = false;
-                    break;
+            if (items[1].revents & ZMQ_POLLIN) {
+                int rc = zmq_recv (control, content, CONTENT_SIZE_MAX, 0);
+
+                if (rc > 0) {
+                    content[rc] = 0; // NULL-terminate the command string
+                    if (is_verbose)
+                        printf (
+                          "client receive - routing_id = %s    command = %s\n",
+                          routing_id, content);
+                    if (memcmp (content, "TERMINATE", 9) == 0) {
+                        run = false;
+                        break;
+                    }
+                    if (memcmp (content, "STOP", 4) == 0) {
+                        keep_sending = false;
+                        break;
+                    }
                 }
             }
         }
-        sprintf(content, "request #%03d", ++request_nbr); // CONTENT_SIZE
-        rc = zmq_send (client, content, CONTENT_SIZE, 0);
-        assert (rc == CONTENT_SIZE);
+
+        if (keep_sending) {
+            snprintf (content, CONTENT_SIZE_MAX * sizeof (char),
+                      "request #%03d", ++request_nbr); // CONTENT_SIZE
+            if (is_verbose)
+                printf ("client send - routing_id = %s    request #%03d\n",
+                        routing_id, request_nbr);
+            zmq_atomic_counter_inc (g_clients_pkts_out);
+
+            TEST_ASSERT_EQUAL_INT (CONTENT_SIZE,
+                                   zmq_send (client, content, CONTENT_SIZE, 0));
+        }
     }
 
-    rc = zmq_close (client);
-    assert (rc == 0);
-    rc = zmq_close (control);
-    assert (rc == 0);
-    rc = zmq_close (endpoint);
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (client));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (control));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (endpoint));
     free (my_endpoint);
 }
 
@@ -146,83 +154,60 @@ client_task (void *db)
 // one request at a time but one client can talk to multiple workers at
 // once.
 
-static void server_worker (void *ctx);
+static void server_worker (void * /*unused_*/);
 
-void
-server_task (void *ctx)
+void server_task (void * /*unused_*/)
 {
     // Frontend socket talks to clients over TCP
-    size_t len = MAX_SOCKET_STRING;
     char my_endpoint[MAX_SOCKET_STRING];
-    void *frontend = zmq_socket (ctx, ZMQ_ROUTER);
-    assert (frontend);
+    void *frontend = zmq_socket (get_test_context (), ZMQ_ROUTER);
+    TEST_ASSERT_NOT_NULL (frontend);
     int linger = 0;
-    int rc = zmq_setsockopt (frontend, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_bind (frontend, "tcp://127.0.0.1:*");
-    assert (rc == 0);
-    rc = zmq_getsockopt (frontend, ZMQ_LAST_ENDPOINT, my_endpoint, &len);
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (frontend, ZMQ_LINGER, &linger, sizeof (linger)));
+    bind_loopback_ipv4 (frontend, my_endpoint, sizeof my_endpoint);
 
     // Backend socket talks to workers over inproc
-    void *backend = zmq_socket (ctx, ZMQ_DEALER);
-    assert (backend);
-    rc = zmq_setsockopt (backend, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_bind (backend, "inproc://backend");
-    assert (rc == 0);
-
-    // Control socket receives terminate command from main over inproc
-    void *control = zmq_socket (ctx, ZMQ_SUB);
-    assert (control);
-    rc = zmq_setsockopt (control, ZMQ_SUBSCRIBE, "", 0);
-    assert (rc == 0);
-    rc = zmq_setsockopt (control, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_connect (control, "inproc://control");
-    assert (rc == 0);
+    void *backend = zmq_socket (get_test_context (), ZMQ_DEALER);
+    TEST_ASSERT_NOT_NULL (backend);
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (backend, ZMQ_LINGER, &linger, sizeof (linger)));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (backend, "inproc://backend"));
 
     // Launch pool of worker threads, precise number is not critical
     int thread_nbr;
-    void* threads [5];
+    void *threads[5];
     for (thread_nbr = 0; thread_nbr < QT_WORKERS; thread_nbr++)
-        threads[thread_nbr] = zmq_threadstart (&server_worker, ctx);
+        threads[thread_nbr] = zmq_threadstart (&server_worker, NULL);
 
     // Endpoint socket sends random port to avoid test failing when port in use
-    void *endpoint_receivers [QT_CLIENTS];
-    char endpoint_source [256];
+    void *endpoint_receivers[QT_CLIENTS];
+    char endpoint_source[256];
     for (int i = 0; i < QT_CLIENTS; ++i) {
-        endpoint_receivers [i] = zmq_socket (ctx, ZMQ_PAIR);
-        assert (endpoint_receivers [i]);
-        rc = zmq_setsockopt (endpoint_receivers [i], ZMQ_LINGER, &linger,
-                sizeof (linger));
-        assert (rc == 0);
-        sprintf (endpoint_source, "inproc://endpoint%d", i);
-        rc = zmq_bind (endpoint_receivers [i], endpoint_source);
-        assert (rc == 0);
+        endpoint_receivers[i] = zmq_socket (get_test_context (), ZMQ_PAIR);
+        TEST_ASSERT_NOT_NULL (endpoint_receivers[i]);
+        TEST_ASSERT_SUCCESS_ERRNO (zmq_setsockopt (
+          endpoint_receivers[i], ZMQ_LINGER, &linger, sizeof (linger)));
+        snprintf (endpoint_source, 256 * sizeof (char), "inproc://endpoint%d",
+                  i);
+        TEST_ASSERT_SUCCESS_ERRNO (
+          zmq_bind (endpoint_receivers[i], endpoint_source));
     }
 
     for (int i = 0; i < QT_CLIENTS; ++i) {
-        rc = s_send (endpoint_receivers [i], my_endpoint);
-        assert (rc > 0);
+        send_string_expect_success (endpoint_receivers[i], my_endpoint, 0);
     }
 
     // Connect backend to frontend via a proxy
-    rc = zmq_proxy_steerable (frontend, backend, NULL, control);
-    assert (rc == 0);
+    zmq_proxy (frontend, backend, NULL);
 
     for (thread_nbr = 0; thread_nbr < QT_WORKERS; thread_nbr++)
         zmq_threadclose (threads[thread_nbr]);
 
-    rc = zmq_close (frontend);
-    assert (rc == 0);
-    rc = zmq_close (backend);
-    assert (rc == 0);
-    rc = zmq_close (control);
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (frontend));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (backend));
     for (int i = 0; i < QT_CLIENTS; ++i) {
-        rc = zmq_close(endpoint_receivers [i]);
-        assert (rc == 0);
+        TEST_ASSERT_SUCCESS_ERRNO (zmq_close (endpoint_receivers[i]));
     }
 }
 
@@ -230,105 +215,130 @@ server_task (void *ctx)
 // of replies back, with random delays between replies:
 // The comments in the first column, if suppressed, makes it a poller version
 
-static void
-server_worker (void *ctx)
+static void server_worker (void * /*unused_*/)
 {
-    void *worker = zmq_socket (ctx, ZMQ_DEALER);
-    assert (worker);
+    void *worker = zmq_socket (get_test_context (), ZMQ_DEALER);
+    TEST_ASSERT_NOT_NULL (worker);
     int linger = 0;
-    int rc = zmq_setsockopt (worker, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_connect (worker, "inproc://backend");
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (worker, ZMQ_LINGER, &linger, sizeof (linger)));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (worker, "inproc://backend"));
 
     // Control socket receives terminate command from main over inproc
-    void *control = zmq_socket (ctx, ZMQ_SUB);
-    assert (control);
-    rc = zmq_setsockopt (control, ZMQ_SUBSCRIBE, "", 0);
-    assert (rc == 0);
-    rc = zmq_setsockopt (control, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_connect (control, "inproc://control");
-    assert (rc == 0);
+    void *control = zmq_socket (control_context, ZMQ_SUB);
+    TEST_ASSERT_NOT_NULL (control);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_setsockopt (control, ZMQ_SUBSCRIBE, "", 0));
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (control, ZMQ_LINGER, &linger, sizeof (linger)));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (control, "inproc://control"));
 
-    char content [CONTENT_SIZE_MAX]; //    bigger than what we need to check that
-    char identity [ID_SIZE_MAX];      // the size received is the size sent
+    char content[CONTENT_SIZE_MAX] =
+      {}; // bigger than what we need to check that
+    char routing_id[ROUTING_ID_SIZE_MAX] =
+      {}; // the size received is the size sent
 
     bool run = true;
+    bool keep_sending = true;
     while (run) {
-        rc = zmq_recv (control, content, CONTENT_SIZE_MAX, ZMQ_DONTWAIT); // usually, rc == -1 (no message)
+        int rc = zmq_recv (control, content, CONTENT_SIZE_MAX,
+                           ZMQ_DONTWAIT); // usually, rc == -1 (no message)
         if (rc > 0) {
+            content[rc] = 0; // NULL-terminate the command string
             if (is_verbose)
-                printf("server_worker receives command = %s\n", content);
+                printf ("server_worker receives command = %s\n", content);
             if (memcmp (content, "TERMINATE", 9) == 0)
                 run = false;
+            if (memcmp (content, "STOP", 4) == 0)
+                keep_sending = false;
         }
         // The DEALER socket gives us the reply envelope and message
         // if we don't poll, we have to use ZMQ_DONTWAIT, if we poll, we can block-receive with 0
-        rc = zmq_recv (worker, identity, ID_SIZE_MAX, ZMQ_DONTWAIT);
-        if (rc == ID_SIZE) {
+        rc = zmq_recv (worker, routing_id, ROUTING_ID_SIZE_MAX, ZMQ_DONTWAIT);
+        if (rc == ROUTING_ID_SIZE) {
             rc = zmq_recv (worker, content, CONTENT_SIZE_MAX, 0);
-            assert (rc == CONTENT_SIZE);
+            TEST_ASSERT_EQUAL_INT (CONTENT_SIZE, rc);
             if (is_verbose)
-                printf ("server receive - identity = %s    content = %s\n", identity, content);
+                printf ("server receive - routing_id = %s    content = %s\n",
+                        routing_id, content);
 
             // Send 0..4 replies back
-            int reply, replies = rand() % 5;
-            for (reply = 0; reply < replies; reply++) {
-                // Sleep for some fraction of a second
-                msleep (rand () % 10 + 1);
-                //  Send message from server to client
-                rc = zmq_send (worker, identity, ID_SIZE, ZMQ_SNDMORE);
-                assert (rc == ID_SIZE);
-                rc = zmq_send (worker, content, CONTENT_SIZE, 0);
-                assert (rc == CONTENT_SIZE);
+            if (keep_sending) {
+                int reply, replies = rand () % 5;
+                for (reply = 0; reply < replies; reply++) {
+                    // Sleep for some fraction of a second
+                    msleep (rand () % 10 + 1);
+
+                    //  Send message from server to client
+                    if (is_verbose)
+                        printf ("server send - routing_id = %s    reply\n",
+                                routing_id);
+                    zmq_atomic_counter_inc (g_workers_pkts_out);
+
+                    rc = zmq_send (worker, routing_id, ROUTING_ID_SIZE,
+                                   ZMQ_SNDMORE);
+                    TEST_ASSERT_EQUAL_INT (ROUTING_ID_SIZE, rc);
+                    rc = zmq_send (worker, content, CONTENT_SIZE, 0);
+                    TEST_ASSERT_EQUAL_INT (CONTENT_SIZE, rc);
+                }
             }
         }
     }
-    rc = zmq_close (worker);
-    assert (rc == 0);
-    rc = zmq_close (control);
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (worker));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (control));
 }
 
 // The main thread simply starts several clients and a server, and then
 // waits for the server to finish.
 
-int main (void)
+void test_proxy ()
 {
-    setup_test_environment ();
+    g_clients_pkts_out = zmq_atomic_counter_new ();
+    g_workers_pkts_out = zmq_atomic_counter_new ();
+    control_context = zmq_ctx_new ();
+    TEST_ASSERT_NOT_NULL (control_context);
 
-    void *ctx = zmq_ctx_new ();
-    assert (ctx);
     // Control socket receives terminate command from main over inproc
-    void *control = zmq_socket (ctx, ZMQ_PUB);
-    assert (control);
+    void *control = zmq_socket (control_context, ZMQ_PUB);
     int linger = 0;
-    int rc = zmq_setsockopt (control, ZMQ_LINGER, &linger, sizeof (linger));
-    assert (rc == 0);
-    rc = zmq_bind (control, "inproc://control");
-    assert (rc == 0);
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (control, ZMQ_LINGER, &linger, sizeof (linger)));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (control, "inproc://control"));
 
-    void *threads [QT_CLIENTS + 1];
-    struct thread_data databags [QT_CLIENTS + 1];
+    void *threads[QT_CLIENTS + 1];
+    struct thread_data databags[QT_CLIENTS + 1];
     for (int i = 0; i < QT_CLIENTS; i++) {
-        databags [i].ctx = ctx;
-        databags [i].id = i;
-        threads[i] = zmq_threadstart  (&client_task, &databags [i]);
+        databags[i].id = i;
+        threads[i] = zmq_threadstart (&client_task, &databags[i]);
     }
-    threads[QT_CLIENTS] = zmq_threadstart  (&server_task, ctx);
+    threads[QT_CLIENTS] = zmq_threadstart (&server_task, NULL);
     msleep (500); // Run for 500 ms then quit
 
-    rc = zmq_send (control, "TERMINATE", 9, 0);
-    assert (rc == 9);
+    if (is_verbose)
+        printf ("stopping all clients and server workers\n");
+    send_string_expect_success (control, "STOP", 0);
 
-    rc = zmq_close (control);
-    assert (rc == 0);
+    msleep (500); // Wait for all clients and workers to STOP
+
+    if (is_verbose)
+        printf ("shutting down all clients and server workers\n");
+    send_string_expect_success (control, "TERMINATE", 0);
+
+    msleep (500); // Wait for all clients and workers to terminate
+
+    teardown_test_context ();
 
     for (int i = 0; i < QT_CLIENTS + 1; i++)
         zmq_threadclose (threads[i]);
 
-    rc = zmq_ctx_term (ctx);
-    assert (rc == 0);
-    return 0;
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_close (control));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_ctx_destroy (control_context));
+}
+
+int main (void)
+{
+    setup_test_environment (360);
+
+    UNITY_BEGIN ();
+    RUN_TEST (test_proxy);
+    return UNITY_END ();
 }

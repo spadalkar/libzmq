@@ -1,30 +1,31 @@
 #!/usr/bin/env bash
+#
+#   Exit if any step fails
+set -e
 
-NDK_VER=android-ndk-r11c
-NDK_ABI_VER=4.9
+# Use directory of current script as the working directory
+cd "$( dirname "${BASH_SOURCE[0]}" )"
 
-if [ $TRAVIS_OS_NAME == "linux" ]
-then
-    NDK_PLATFORM=linux-x86_64
-elif [ $TRAVIS_OS_NAME == "osx" ]
-then
-    NDK_PLATFORM=darwin-x86_64
-else
-    echo "Unsupported platform $TRAVIS_OS_NAME"
-    exit 1
+# Configuration
+export NDK_VERSION="${NDK_VERSION:-android-ndk-r25}"
+export ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-/tmp/${NDK_VERSION}}"
+export MIN_SDK_VERSION=${MIN_SDK_VERSION:-21}
+export ANDROID_BUILD_DIR="${ANDROID_BUILD_DIR:-${PWD}/.build}"
+export ANDROID_BUILD_CLEAN="${ANDROID_BUILD_CLEAN:-yes}"
+export ANDROID_DEPENDENCIES_DIR="${ANDROID_DEPENDENCIES_DIR:-${PWD}/.deps}"
+
+# Cleanup.
+if [ "${ANDROID_BUILD_CLEAN}" = "yes" ] ; then
+    rm -rf   "${ANDROID_BUILD_DIR}/prefix"
+    mkdir -p "${ANDROID_BUILD_DIR}/prefix"
+    rm -rf   "${ANDROID_DEPENDENCIES_DIR}"
+    mkdir -p "${ANDROID_DEPENDENCIES_DIR}"
+
+    # Called shells MUST not clean after ourselves !
+    export ANDROID_BUILD_CLEAN="no"
 fi
 
-export FILENAME=$NDK_VER-$NDK_PLATFORM.zip
-
-(cd '/tmp' \
-    && wget http://dl.google.com/android/repository/$FILENAME \
-    && unzip $FILENAME &> /dev/null ) || exit 1
-unset FILENAME
-
-export ANDROID_NDK_ROOT="/tmp/$NDK_VER"
-export TOOLCHAIN_PATH="$ANDROID_NDK_ROOT/toolchains/arm-linux-androideabi-$NDK_ABI_VER/prebuilt/$NDK_PLATFORM/bin"
-export TOOLCHAIN_NAME="arm-linux-androideabi-$NDK_ABI_VER"
-export TOOLCHAIN_HOST="arm-linux-androideabi"
-export TOOLCHAIN_ARCH="arm"
-
-source ./build.sh
+./build.sh "arm"
+./build.sh "arm64"
+./build.sh "x86"
+./build.sh "x86_64"
